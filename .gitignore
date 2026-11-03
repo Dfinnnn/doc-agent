@@ -1,0 +1,25 @@
+# Python virtual environment
+.venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Secrets: real settings and the Google service-account key
+.env
+secrets/
+
+# Data files: the real logs and testing copies stay outside this repo,
+# but block them here too in case one gets copied in by accident
+*.docx
+*.xlsx
+*.csv
+
+# SQLite database (will hold your activity log and old values)
+*.db
+*.sqlite
+
+# Test and editor leftovers
+.pytest_cache/
+.vscode/
+.idea/
