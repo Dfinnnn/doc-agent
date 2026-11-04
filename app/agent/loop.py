@@ -36,6 +36,8 @@ Rules:
   write tools. Call write tools only when the user asks to log or write.
 - Write tools only propose changes. Never say that something was saved or written.
 - Read only what the question needs. Do not search other dates for examples.
+- Records change between messages (the user approves writes and undoes them).
+  When asked what a record holds now, read it again; do not answer from earlier results.
 - If a request needs something your tools cannot do, say so and why.
 - Keep answers short and plain.
 """
@@ -86,6 +88,14 @@ def ask(llm, messages, tools, record):
     return reply["content"] or "(no answer)"
 
 
+def tell_agent(messages, lines):
+    """Let the LLM know what the app wrote or undid, so it does not rely on old reads."""
+    if lines:
+        messages.append({"role": "user", "content": "[Note from the app, not the user] "
+                         + " ".join(lines) + " The records changed; read them again before "
+                         "answering about their current content."})
+
+
 def main():
     llm = OpenAICompatLLM.from_config()
     store = Store()
@@ -110,7 +120,9 @@ def main():
 
         run_id = store.start_run(text, config.LLM_PROVIDER, config.LLM_MODEL)
         if words[0] == "undo" and len(words) == 2 and words[1].isdigit():
-            print(f"\n{undo(store, int(words[1]), lambda kind, data: store.log(run_id, kind, data))}")
+            result = undo(store, int(words[1]), lambda kind, data: store.log(run_id, kind, data))
+            print(f"\n{result}")
+            tell_agent(messages, [result])
             continue
         set_context(store, run_id)  # write tools save their proposals to this run
 
@@ -123,7 +135,7 @@ def main():
             answer = ask(llm, messages, tools, record)
             record("answer", {"text": answer})
             print(f"\nagent> {answer}")
-            review(store, run_id, record)  # the user approves; the code writes
+            tell_agent(messages, review(store, run_id, record))  # the user approves; the code writes
         except Exception as error:  # report plainly, keep the chat going
             record("error", {"error": f"{type(error).__name__}: {error}"})
             print(f"\nagent> Error: {type(error).__name__}: {error}")

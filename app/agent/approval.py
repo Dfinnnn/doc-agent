@@ -133,10 +133,16 @@ def ask_approval(ops, input_fn):
 
 
 def review(store, run_id, record, input_fn=input):
-    """Show this run's proposed operations, ask the user, write what they approve."""
+    """Show this run's proposed operations, ask the user, write what they approve.
+    Returns one line per operation saying what happened (empty if none)."""
     ops = store.operations(run_id, PROPOSED)
     if not ops:
-        return
+        return []
+    results = []
+
+    def report(line):
+        print(f"   {line}")
+        results.append(line)
     ops.sort(key=lambda op: (ORDER[op["kind"]], op["id"]))
     print("\nProposed changes (nothing is written yet):")
     for op in ops:
@@ -149,17 +155,18 @@ def review(store, run_id, record, input_fn=input):
     for op in ops:
         if op["id"] not in chosen:
             store.update_operation(op["id"], REJECTED)
-            print(f"   #{op['id']} rejected, not written")
+            report(f"#{op['id']} rejected, not written")
             continue
         if any(i["severity"] == "block" for i in op["issues"]):
             store.update_operation(op["id"], REJECTED, error="blocked: cannot be approved")
-            print(f"   #{op['id']} skipped: it has a block issue")
+            report(f"#{op['id']} skipped: it has a block issue")
             continue
         choice = "write"
         if any(i["severity"] == "conflict" for i in op["issues"]):
             choice = ask_choice(op, input_fn)
             if choice == "skip":
                 store.update_operation(op["id"], REJECTED, error="skipped by user")
+                report(f"#{op['id']} skipped by you, not written")
                 continue
         store.update_operation(op["id"], APPROVED)
         try:
@@ -168,11 +175,12 @@ def review(store, run_id, record, input_fn=input):
             message = f"{type(error).__name__}: {error}"
             store.update_operation(op["id"], FAILED, error=message)
             record("write_failed", {"operation": op["id"], "error": message})
-            print(f"   #{op['id']} FAILED, nothing confirmed: {message}")
+            report(f"#{op['id']} FAILED, nothing confirmed: {message}")
             continue
         store.update_operation(op["id"], WRITTEN, before=before, after=after)
         record("write", {"operation": op["id"], "choice": choice, "before": before, "after": after})
-        print(f"   #{op['id']} written ({choice})")
+        report(f"#{op['id']} {op['kind']} {op['target']} written ({choice})")
+    return results
 
 
 def undo(store, op_id, record):
