@@ -2,15 +2,15 @@
 
 import calendar
 import sys
-from datetime import datetime
+from datetime import date, datetime
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 from app import config
 
-# Read-only access for now; Part 2 changes this when we start writing
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+# Read and write access (the Sheet must also be shared with the robot as Editor)
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 # Sheet header text -> field name in our records, in column order (A to K).
 # Part 4 moves this into profiles/worksheet.json.
@@ -28,6 +28,11 @@ COLUMNS = {
     "Supervisor's Comment": "supervisor_comment",
 }
 
+TOTAL_LABEL = "Total working hours"
+# Same formulas the existing tabs use; {row} and {last} are filled in by the code
+HOURS_FORMULA = "=C{row}-B{row}-D{row}"
+TOTAL_FORMULA = '=ARRAY_CONSTRAIN(ARRAYFORMULA(TEXT(SUM(IFERROR(TIMEVALUE(E2:E{last}),"")), "[h]:mm:ss")), 1, 1)'
+
 
 def get_service():
     """Sign in with the service-account key and return a Sheets API client."""
@@ -37,13 +42,18 @@ def get_service():
     return build("sheets", "v4", credentials=creds)
 
 
-def read_range(tab, cells):
-    """Return the raw values of a range, e.g. read_range("October2026", "A1:Z5")."""
+def read_range(tab, cells, render="FORMATTED_VALUE"):
+    """Return the raw values of a range, e.g. read_range("October2026", "A1:Z5").
+
+    render="FORMATTED_VALUE" gives what you see (e.g. "02/10/2026");
+    "UNFORMATTED_VALUE" gives the number underneath (e.g. 46297).
+    """
     result = (
         get_service()
         .spreadsheets()
         .values()
-        .get(spreadsheetId=config.SHEET_ID, range=f"'{tab}'!{cells}")
+        .get(spreadsheetId=config.SHEET_ID, range=f"'{tab}'!{cells}",
+             valueRenderOption=render)
         .execute()
     )
     # Empty rows at the end are left out by the API, so default to []
@@ -53,6 +63,17 @@ def read_range(tab, cells):
 def tab_name(year, month):
     """Every month has its own tab named like "October2026"."""
     return f"{calendar.month_name[month]}{year}"
+
+
+def to_serial(day):
+    """Sheets stores a date as a number of days since 30/12/1899."""
+    return (day - date(1899, 12, 30)).days
+
+
+def to_day_fraction(time_text):
+    """Sheets stores a time as a fraction of a day: "18:00" -> 0.75."""
+    hours, minutes = time_text.split(":")
+    return (int(hours) * 60 + int(minutes)) / (24 * 60)
 
 
 def read_month(year, month):
@@ -67,7 +88,7 @@ def read_month(year, month):
     records = []
     for row in days:
         # The last row of each tab is the month's total, not a day
-        if row and row[0] == "Total working hours":
+        if row and row[0] == TOTAL_LABEL:
             break
         # The API drops empty cells at the end of a row, so pad it to full width
         row = row + [""] * (len(COLUMNS) - len(row))
@@ -77,15 +98,167 @@ def read_month(year, month):
     return records
 
 
+def write_day(day, clock_in, clock_out, break_time, mode,
+              tasks="", challenges="", learnings="", next_steps="", overwrite=False):
+    """Fill in one day's row. Times are "HH:MM" text, e.g. "08:30".
+
+    Never writes Hours Worked (a formula) or Supervisor's Comment.
+    Refuses if the row's date is not this day, or if the text cells already
+    have something in them (unless overwrite=True).
+    """
+    tab = tab_name(day.year, day.month)
+    row = day.day + 1  # row 1 is the header
+
+    if tab not in [t["title"] for t in list_tabs()]:
+        raise ValueError(f"There is no {tab} tab; create it first")
+
+    # Safety check: is this really the row for this date? (catches broken tabs)
+    current = read_range(tab, f"A{row}:J{row}", render="UNFORMATTED_VALUE")
+    current = (current[0] if current else []) + [""] * len(COLUMNS)
+    if current[0] != to_serial(day):
+        raise ValueError(f"Row {row} of {tab} is not {day:%d/%m/%Y}; not writing")
+    # Only the text cells (G-J) count; Mode may already say "Weekend" from the new tab
+    if any(current[6:10]) and not overwrite:
+        raise ValueError(f"{day:%d/%m/%Y} already has entries; not overwriting them")
+
+    get_service().spreadsheets().values().batchUpdate(
+        spreadsheetId=config.SHEET_ID,
+        body={
+            "valueInputOption": "RAW",  # text stays text, even if it starts with "="
+            "data": [
+                # Columns B-D: times (E is skipped, it holds the Hours formula)
+                {"range": f"'{tab}'!B{row}:D{row}",
+                 "values": [[to_day_fraction(clock_in), to_day_fraction(clock_out),
+                             to_day_fraction(break_time)]]},
+                # Columns F-J: Mode and the text fields (K is the supervisor's)
+                {"range": f"'{tab}'!F{row}:J{row}",
+                 "values": [[mode, tasks, challenges, learnings, next_steps]]},
+            ],
+        },
+    ).execute()
+
+
+def list_tabs():
+    """Return each tab's id, title and position, in the order shown in the Sheet."""
+    meta = (
+        get_service()
+        .spreadsheets()
+        .get(spreadsheetId=config.SHEET_ID, fields="sheets.properties(sheetId,title,index)")
+        .execute()
+    )
+    return [sheet["properties"] for sheet in meta["sheets"]]
+
+
+def find_template(tabs):
+    """Pick the newest tab with intact headers to copy the layout from.
+
+    Returns the tab and how many day rows it has (the rows before the Total row).
+    """
+    for tab in reversed(tabs):
+        rows = read_range(tab["title"], "A1:K")
+        if not rows or rows[0] != list(COLUMNS):
+            continue  # e.g. a half-finished tab with blank headers
+        for number, row in enumerate(rows):
+            if row and row[0] == TOTAL_LABEL:
+                return tab, number - 1  # minus the header row
+    raise ValueError("No tab with intact headers and a Total row to copy from")
+
+
+def create_month_tab(year, month):
+    """Create a new month tab with that month's dates and empty entries.
+
+    Copies the layout (colours, fonts, dropdowns) from an existing tab, then
+    rewrites every day row, so nothing from the old month is left behind.
+    Refuses if the tab already exists.
+    """
+    title = tab_name(year, month)
+    tabs = list_tabs()
+    if title in [tab["title"] for tab in tabs]:
+        raise ValueError(f"{title} already exists; not overwriting it")
+
+    template, template_days = find_template(tabs)
+    days = calendar.monthrange(year, month)[1]
+
+    # Place the new tab right after the previous month's tab, if there is one
+    prev_year, prev_month = (year, month - 1) if month > 1 else (year - 1, 12)
+    position = len(tabs)
+    for tab in tabs:
+        if tab["title"] == tab_name(prev_year, prev_month):
+            position = tab["index"] + 1
+
+    sheets = get_service().spreadsheets()
+
+    # 1. Duplicate the template tab under the new name
+    reply = sheets.batchUpdate(
+        spreadsheetId=config.SHEET_ID,
+        body={"requests": [{"duplicateSheet": {
+            "sourceSheetId": template["sheetId"],
+            "insertSheetIndex": position,
+            "newSheetName": title,
+        }}]},
+    ).execute()
+    new_id = reply["replies"][0]["duplicateSheet"]["properties"]["sheetId"]
+
+    # 2. Make the number of day rows match the new month (row indexes start at 0)
+    requests = []
+    if days > template_days:
+        requests.append({"insertDimension": {
+            "range": {"sheetId": new_id, "dimension": "ROWS",
+                      "startIndex": template_days + 1, "endIndex": days + 1},
+        }})
+    elif days < template_days:
+        requests.append({"deleteDimension": {
+            "range": {"sheetId": new_id, "dimension": "ROWS",
+                      "startIndex": days + 1, "endIndex": template_days + 1},
+        }})
+    # Give every day row the same look and Mode dropdown as the first day row
+    first_row = {"sheetId": new_id, "startRowIndex": 1, "endRowIndex": 2,
+                 "startColumnIndex": 0, "endColumnIndex": len(COLUMNS)}
+    day_rows = {"sheetId": new_id, "startRowIndex": 1, "endRowIndex": days + 1,
+                "startColumnIndex": 0, "endColumnIndex": len(COLUMNS)}
+    for paste_type in ("PASTE_FORMAT", "PASTE_DATA_VALIDATION"):
+        requests.append({"copyPaste": {
+            "source": first_row, "destination": day_rows, "pasteType": paste_type,
+        }})
+    sheets.batchUpdate(spreadsheetId=config.SHEET_ID, body={"requests": requests}).execute()
+
+    # 3. Write the new dates, zero times, Weekend marks and the formulas
+    values = []
+    for number in range(1, days + 1):
+        day = date(year, month, number)
+        row = number + 1  # row 1 is the header
+        mode = "Weekend" if day.weekday() >= 5 else ""  # Saturday = 5, Sunday = 6
+        values.append([to_serial(day), 0, 0, 0, HOURS_FORMULA.format(row=row), mode,
+                       "", "", "", "", ""])
+    values.append([TOTAL_LABEL, "", "", "", TOTAL_FORMULA.format(last=days + 1)])
+    sheets.values().update(
+        spreadsheetId=config.SHEET_ID,
+        range=f"'{title}'!A2:K{days + 2}",
+        valueInputOption="USER_ENTERED",  # so formulas are read as formulas
+        body={"values": values},
+    ).execute()
+
+    return title
+
+
 if __name__ == "__main__":
-    # Usage: python -m app.integrations.sheets [year] [month]   (default: October 2026)
-    year = int(sys.argv[1]) if len(sys.argv) > 1 else 2026
-    month = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+    # Usage:
+    #   python -m app.integrations.sheets read 2026 10     (print a month)
+    #   python -m app.integrations.sheets create 2026 12   (create a month tab)
+    #   python -m app.integrations.sheets write 02/11/2026 08:30 18:00 01:00 WFO "tasks text"
+    command = sys.argv[1]
 
-    records = read_month(year, month)
-    print(f"{tab_name(year, month)}: {len(records)} days\n")
-    for r in records:
-        print(f"{r['date']:%d/%m/%Y}  {r['mode']:<8} {r['hours']}  {r['tasks'][:50]!r}")
+    if command == "write":
+        day = datetime.strptime(sys.argv[2], "%d/%m/%Y").date()
+        write_day(day, *sys.argv[3:])
+        print(f"Wrote {day:%d/%m/%Y}")
+        sys.exit()
 
-    print("\nOne full record:")
-    print(next(r for r in records if r["tasks"]))
+    year, month = int(sys.argv[2]), int(sys.argv[3])
+    if command == "read":
+        records = read_month(year, month)
+        print(f"{tab_name(year, month)}: {len(records)} days\n")
+        for r in records:
+            print(f"{r['date']:%d/%m/%Y}  {r['mode']:<8} {r['hours']}  {r['tasks'][:50]!r}")
+    elif command == "create":
+        print(f"Created {create_month_tab(year, month)}")
