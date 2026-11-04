@@ -50,9 +50,12 @@ class OpenAICompatLLM(LLM):
             except json.JSONDecodeError:
                 arguments = {"_invalid": call.function.arguments}  # the loop reports it
             tool_calls.append({"id": call.id, "name": call.function.name, "arguments": arguments})
+        usage = response.usage
         return {
             "content": reply.content,
             "tool_calls": tool_calls,
+            "tokens": {"input": usage.prompt_tokens, "output": usage.completion_tokens}
+                      if usage else None,
             # Keep every field the provider sent (some need theirs echoed back)
             "message": reply.model_dump(exclude_none=True),
         }

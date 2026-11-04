@@ -126,6 +126,19 @@ def write_entry(day, activities, overwrite=False):
     doc.save(config.LOGBOOK_PATH)  # fails if the file is open in Word
 
 
+def restore_entry(day, date_text, activities_text):
+    """Put back a day's cells exactly as read before (used by undo).
+
+    activities_text is cell_text() output, e.g. "• task one\\n• task two", or "".
+    """
+    doc = open_logbook()
+    row = day_row(doc, day)
+    tasks = [line.lstrip(BULLET).strip() for line in activities_text.splitlines() if line.strip()]
+    set_cell_text(row.cells[0], [date_text] if date_text else [])
+    set_cell_text(row.cells[1], tasks, bullets=True)
+    doc.save(config.LOGBOOK_PATH)
+
+
 def week_header(week):
     """The header text, built from the computed dates, e.g. "WEEK: Week 5 (14/09 – 18/09)"."""
     days = week_dates(week)

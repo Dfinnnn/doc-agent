@@ -61,9 +61,13 @@ def to_serial(day):
 
 
 def to_day_fraction(time_text):
-    """Sheets stores a time as a fraction of a day: "18:00" -> 0.75."""
-    hours, minutes = time_text.split(":")
-    return (int(hours) * 60 + int(minutes)) / (24 * 60)
+    """Sheets stores a time as a fraction of a day: "18:00" -> 0.75.
+
+    Accepts "HH:MM" or "HH:MM:SS" (the format read_month returns).
+    """
+    hours, minutes, *seconds = time_text.split(":")
+    total = int(hours) * 3600 + int(minutes) * 60 + (int(seconds[0]) if seconds else 0)
+    return total / (24 * 3600)
 
 
 def read_month(year, month):

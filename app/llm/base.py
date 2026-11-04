@@ -20,6 +20,7 @@ class LLM:
         Returns a dict:
             content     - the model's text answer (None if it only calls tools)
             tool_calls  - [{"id", "name", "arguments": dict}], empty if none
+            tokens      - {"input", "output"} as reported by the provider, or None
             message     - the reply in the provider's format, to append to messages
         """
         raise NotImplementedError

@@ -97,8 +97,30 @@ def audit():
 
 # ---- Write tools: they only PROPOSE. Nothing is written until Part 8 adds approval. ----
 
-NOT_WRITTEN = "not written: needs preview and approval (Part 8)"
+NOT_WRITTEN = "not written: shown to the user for approval"
 SHEET_TEXT_FIELDS = ["tasks", "challenges", "learnings", "next_steps"]
+
+# Issue severities: "block" cannot be approved; "conflict" needs overwrite/append/skip;
+# "warn" is shown but can be approved.
+BLOCK, CONFLICT, WARN = "block", "conflict", "warn"
+
+# Set by the agent loop for each user message, so proposals are saved to the store
+CONTEXT = {"store": None, "run_id": None}
+
+
+def set_context(store, run_id):
+    CONTEXT.update(store=store, run_id=run_id)
+
+
+def issue(text, severity):
+    return {"text": text, "severity": severity}
+
+
+def save_proposal(kind, target, proposal, issues):
+    """Save one proposed change as an operation; returns its id (None if no store)."""
+    if CONTEXT["store"] is None:
+        return None
+    return CONTEXT["store"].add_operation(CONTEXT["run_id"], kind, target, proposal, issues)
 
 
 def is_time(text):
@@ -118,30 +140,33 @@ def write_sheet_rows(rows):
         day = parse_date(row["date"])
         tab = sheets.tab_name(day.year, day.month)
         if row.get("mode") not in sheets.PROFILE["modes"]:
-            issues.append(f"Mode must be one of {sheets.PROFILE['modes']}")
+            issues.append(issue(f"Mode must be one of {sheets.PROFILE['modes']}", BLOCK))
         for field in ("clock_in", "clock_out", "break_time"):
             if not is_time(row.get(field)):
-                issues.append(f"{field} must be HH:MM")
+                issues.append(issue(f"{field} must be HH:MM", BLOCK))
         if day > date.today():
-            issues.append("date is in the future")
+            issues.append(issue("date is in the future", WARN))
         if tab not in tabs:
-            issues.append(f"tab {tab} does not exist yet; create_month_tab is needed first")
+            issues.append(issue(f"tab {tab} does not exist yet; create_month_tab must be approved too", WARN))
         else:
             key = (day.year, day.month)
             if key not in current:
                 current[key] = {r["date"]: r for r in sheets.read_month(*key)}
             existing = current[key].get(day, {})
             if any(existing.get(field) for field in SHEET_TEXT_FIELDS):
-                issues.append("this day already has entries: overwrite, append or skip must be chosen")
-        proposals.append({"row": row, "tab": tab, "issues": issues})
+                issues.append(issue("this day already has entries", CONFLICT))
+        op = save_proposal("sheet_row", row["date"], row, issues)
+        proposals.append({"operation": op, "row": row, "tab": tab, "issues": issues})
     return {"proposed": "write_sheet_rows", "changes": proposals, "status": NOT_WRITTEN}
 
 
 def create_month_tab(year, month):
     title = sheets.tab_name(year, month)
     exists = title in {tab["title"] for tab in sheets.list_tabs()}
-    return {"proposed": "create_month_tab", "tab": title,
-            "issues": [f"{title} already exists"] if exists else [], "status": NOT_WRITTEN}
+    issues = [issue(f"{title} already exists", BLOCK)] if exists else []
+    op = save_proposal("month_tab", title, {"year": year, "month": month}, issues)
+    return {"proposed": "create_month_tab", "operation": op, "tab": title,
+            "issues": issues, "status": NOT_WRITTEN}
 
 
 def write_logbook_entries(entries):
@@ -154,22 +179,29 @@ def write_logbook_entries(entries):
         day = parse_date(entry["date"])
         week = (day - logbook_docx.WEEK1_MONDAY).days // 7 + 1
         if day.weekday() >= 5:
-            issues.append("weekend rows are not supported yet (Part 9)")
+            issues.append(issue("weekend rows are not supported yet (Part 9)", BLOCK))
         elif week > weeks:
-            issues.append(f"Week {week} table does not exist yet; add_week_table is needed first")
+            issues.append(issue(f"Week {week} table does not exist yet; add_week_table must be approved too", WARN))
         elif existing.get(day, {}).get("activities"):
-            issues.append("this day already has an entry: overwrite, append or skip must be chosen")
+            issues.append(issue("this day already has an entry", CONFLICT))
         if day > date.today():
-            issues.append("date is in the future")
-        proposals.append({"entry": entry, "week": week, "issues": issues})
+            issues.append(issue("date is in the future", WARN))
+        op = save_proposal("logbook_entry", entry["date"], entry, issues)
+        proposals.append({"operation": op, "entry": entry, "week": week, "issues": issues})
     return {"proposed": "write_logbook_entries", "changes": proposals, "status": NOT_WRITTEN}
 
 
 def add_week_table(up_to_week):
     weeks = len(logbook_docx.find_week_tables(logbook_docx.open_logbook()))
-    new = [{"week": w, "header": logbook_docx.week_header(w)} for w in range(weeks + 1, up_to_week + 1)]
-    return {"proposed": "add_week_table", "weeks": new,
-            "issues": [] if new else [f"Week {up_to_week} already exists"], "status": NOT_WRITTEN}
+    if up_to_week <= weeks:
+        return {"proposed": "add_week_table", "weeks": [],
+                "issues": [issue(f"Week {up_to_week} already exists", BLOCK)], "status": NOT_WRITTEN}
+    new = []
+    for week in range(weeks + 1, up_to_week + 1):  # one operation per week, in order
+        header = logbook_docx.week_header(week)
+        op = save_proposal("week_table", f"Week {week}", {"week": week, "header": header}, [])
+        new.append({"operation": op, "week": week, "header": header})
+    return {"proposed": "add_week_table", "weeks": new, "issues": [], "status": NOT_WRITTEN}
 
 
 DATE_PARAM = {"type": "string", "description": "Date as dd/mm/yyyy"}
