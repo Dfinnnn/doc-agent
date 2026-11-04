@@ -103,4 +103,4 @@ Multi-user, LangGraph, MCP, vector DB, screenshots in the logbook, stored projec
 
 ## 12. Open items
 - Logbook template: the Week 4 header shows Week 3's dates (copy-paste typo; should be 07/09–11/09). Fix by hand, or let the first Audit propose the fix.
-- Logbook formatting: entries in Times New Roman, size 12. Leave / holiday rows use plain wording ("On leave" / "Public holiday"), set in the profile.
+- Logbook formatting: entries in Times New Roman, size 12. Date as dd/mm/yyyy (centred, as in the template). Activities as bullet points ("•"), one per task, left-aligned. Leave / holiday rows use plain wording ("On leave" / "Public holiday"), set in the profile.

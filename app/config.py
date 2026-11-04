@@ -23,3 +23,10 @@ def _required(name):
 SHEET_ID = _required("SHEET_ID")
 # Relative paths in .env are taken from the project folder, so scripts work from any folder
 SERVICE_ACCOUNT_FILE = PROJECT_ROOT / _required("GOOGLE_SERVICE_ACCOUNT_FILE")
+
+# University Logbook
+LOGBOOK_PATH = Path(_required("LOGBOOK_PATH"))
+# Development guard: only the testing copy may be used until Part 9 passes.
+# Remove this on purpose when switching to the real logbook.
+if "Testing" not in LOGBOOK_PATH.name:
+    raise RuntimeError(f"LOGBOOK_PATH is not the testing copy: {LOGBOOK_PATH.name}")
