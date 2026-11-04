@@ -33,6 +33,13 @@ if "Testing" not in LOGBOOK_PATH.name:
     raise RuntimeError(f"LOGBOOK_PATH is not the testing copy: {LOGBOOK_PATH.name}")
 
 
+# LLM: any OpenAI-compatible provider (Gemini, OpenAI, DeepSeek, Groq...)
+LLM_PROVIDER = _required("LLM_PROVIDER")  # a label for logs, e.g. "gemini"
+LLM_MODEL = _required("LLM_MODEL")
+LLM_API_KEY = _required("LLM_API_KEY")
+LLM_BASE_URL = _required("LLM_BASE_URL")
+
+
 # Document profiles: structure and style of each document (no IDs or paths)
 def _load_profile(name):
     with open(PROJECT_ROOT / "profiles" / f"{name}.json", encoding="utf-8") as file:
