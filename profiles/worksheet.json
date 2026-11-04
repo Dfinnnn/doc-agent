@@ -1,6 +1,7 @@
 {
   "name": "Company Worksheet",
   "tab_name": "{month_name}{year}",
+  "first_day": "2026-08-17",
   "columns": {
     "Date": "date",
     "Clock-in": "clock_in",
