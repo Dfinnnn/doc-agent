@@ -36,6 +36,25 @@ class OpenAICompatLLM(LLM):
         except json.JSONDecodeError:
             raise ValueError(f"The model did not return valid JSON: {text[:200]!r}")
 
+    def chat_tools(self, messages, tools):
+        response = self.client.chat.completions.create(
+            model=self.model, messages=messages, tools=tools,
+        )
+        reply = response.choices[0].message
+        tool_calls = []
+        for call in reply.tool_calls or []:
+            try:
+                arguments = json.loads(call.function.arguments or "{}")
+            except json.JSONDecodeError:
+                arguments = {"_invalid": call.function.arguments}  # the loop reports it
+            tool_calls.append({"id": call.id, "name": call.function.name, "arguments": arguments})
+        return {
+            "content": reply.content,
+            "tool_calls": tool_calls,
+            # Keep every field the provider sent (some need theirs echoed back)
+            "message": reply.model_dump(exclude_none=True),
+        }
+
 
 if __name__ == "__main__":
     # Quick connection check: python -m app.llm.openai_compat

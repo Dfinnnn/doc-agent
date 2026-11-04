@@ -12,3 +12,13 @@ class LLM:
         right fields is the caller's job, not the adapter's.
         """
         raise NotImplementedError
+
+    def chat_tools(self, messages, tools):
+        """Send the conversation so far plus the tools the model may call.
+
+        Returns a dict:
+            content     - the model's text answer (None if it only calls tools)
+            tool_calls  - [{"id", "name", "arguments": dict}], empty if none
+            message     - the reply in the provider's format, to append to messages
+        """
+        raise NotImplementedError
