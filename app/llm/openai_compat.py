@@ -37,8 +37,10 @@ class OpenAICompatLLM(LLM):
             raise ValueError(f"The model did not return valid JSON: {text[:200]!r}")
 
     def chat_tools(self, messages, tools):
+        # tools=None: the model must answer in text (used when the tool limit is reached)
+        extra = {"tools": tools} if tools else {}
         response = self.client.chat.completions.create(
-            model=self.model, messages=messages, tools=tools,
+            model=self.model, messages=messages, **extra,
         )
         reply = response.choices[0].message
         tool_calls = []

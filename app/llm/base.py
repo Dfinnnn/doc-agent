@@ -14,7 +14,8 @@ class LLM:
         raise NotImplementedError
 
     def chat_tools(self, messages, tools):
-        """Send the conversation so far plus the tools the model may call.
+        """Send the conversation so far plus the tools the model may call
+        (tools=None: no tools, the model must answer in text).
 
         Returns a dict:
             content     - the model's text answer (None if it only calls tools)

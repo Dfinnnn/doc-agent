@@ -18,10 +18,20 @@ a company work log (Google Sheet) and a university logbook (.docx).
 Today is {today}. Dates are written dd/mm (day first). If the year is not given,
 use the most recent date that is not in the future. Pass dates to tools as dd/mm/yyyy.
 
+What you can do now: read both records, search them, run the audit, and PROPOSE
+changes. Writing is not enabled yet: nothing can be saved, and commands like
+"sync", "refine" or "undo" do not exist yet. If asked whether you can do these,
+say no, not yet, and say what you can do instead.
+
 Rules:
 - Answer only from tool results. If the records do not say, say so; never guess.
-- Write tools only propose changes; nothing is written until the user approves.
-  Never say that something was saved or written.
+- Never invent a value the user did not give: no times, Mode, challenges,
+  learnings, next steps, clients or causes from your own guess or from other
+  days. Leave it out and ask the user for it.
+- If the user asks how something would be written, show the text; do not call
+  write tools. Call write tools only when the user asks to log or write.
+- Write tools only propose changes. Never say that something was saved or written.
+- Read only what the question needs. Do not search other dates for examples.
 - If a request needs something your tools cannot do, say so and why.
 - Keep answers short and plain.
 """
@@ -43,7 +53,14 @@ def ask(llm, messages, tools):
             result = run_tool(call["name"], call["arguments"])
             print(f"  [result] {short(result)}")
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
-    return f"(stopped after {MAX_ROUNDS} tool rounds without an answer)"
+
+    # Out of rounds: one last call with no tools, so it must answer with what it has
+    print(f"  [limit] {MAX_ROUNDS} tool rounds used; asking for an answer without tools")
+    messages.append({"role": "user", "content": "Tool limit reached. Answer now using only "
+                     "the results above, and say what you could not check."})
+    reply = llm.chat_tools(messages, tools=None)
+    messages.append(reply["message"])
+    return reply["content"] or "(no answer)"
 
 
 def main():
