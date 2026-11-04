@@ -1,0 +1,24 @@
+{
+  "name": "Company Worksheet",
+  "tab_name": "{month_name}{year}",
+  "columns": {
+    "Date": "date",
+    "Clock-in": "clock_in",
+    "Clock-out": "clock_out",
+    "Break Time": "break_time",
+    "Hours Worked": "hours",
+    "Mode": "mode",
+    "Tasks Completed": "tasks",
+    "Challenges Faced": "challenges",
+    "Learnings": "learnings",
+    "Next Steps": "next_steps",
+    "Supervisor's Comment": "supervisor_comment"
+  },
+  "date_format": "%d/%m/%Y",
+  "total_label": "Total working hours",
+  "hours_formula": "=C{row}-B{row}-D{row}",
+  "total_formula": "=ARRAY_CONSTRAIN(ARRAYFORMULA(TEXT(SUM(IFERROR(TIMEVALUE(E2:E{last}),\"\")), \"[h]:mm:ss\")), 1, 1)",
+  "modes": ["WFO", "WFH", "Weekend", "Public Holidays", "Leave", "Medical Leave"],
+  "weekend_mode": "Weekend",
+  "never_write": ["hours", "supervisor_comment"]
+}

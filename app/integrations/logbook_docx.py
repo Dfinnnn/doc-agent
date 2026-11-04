@@ -10,20 +10,21 @@ from docx.shared import Pt
 
 from app import config
 
-# Week 1 starts on Monday 17/08/2026. Every week's dates are computed from this,
+# Layout and style come from profiles/logbook.json
+PROFILE = config.LOGBOOK
+# Week 1's Monday. Every week's dates are computed from this,
 # never read from the header text (headers can contain copy-paste mistakes).
-# Part 4 moves these layout details into profiles/logbook.json.
-WEEK1_MONDAY = date(2026, 8, 17)
-WEEK_LABEL = "WEEK:"      # the first cell of every week table starts with this
-FIRST_DAY_ROW = 2         # row 0 = "WEEK: ...", row 1 = "DATE / ACTIVITIES"
-DAYS_PER_WEEK = 5         # Monday to Friday
+WEEK1_MONDAY = date.fromisoformat(PROFILE["week1_monday"])
+WEEK_LABEL = PROFILE["week_label"]         # the first cell of every week table starts with this
+FIRST_DAY_ROW = PROFILE["first_day_row"]   # row 0 = "WEEK: ...", row 1 = "DATE / ACTIVITIES"
+DAYS_PER_WEEK = PROFILE["days_per_week"]   # Monday to Friday
 # The row after the day rows is the supervisor's verify/stamp/comment row: never written
-FONT_NAME = "Times New Roman"
-FONT_SIZE = 12
-DATE_FORMAT = "%d/%m/%Y"  # full year, since the internship runs into 2027
-EMPTY_LINES = 4           # empty lines in a new Activities cell, as in the template
-BULLET = "•"
-BULLET_INDENT = Pt(12)    # wrapped lines line up with the text, not the bullet
+FONT_NAME = PROFILE["font_name"]
+FONT_SIZE = PROFILE["font_size"]
+DATE_FORMAT = PROFILE["date_format"]       # full year, since the internship runs into 2027
+EMPTY_LINES = PROFILE["empty_lines"]       # empty lines in a new Activities cell, as in the template
+BULLET = PROFILE["bullet"]
+BULLET_INDENT = Pt(PROFILE["bullet_indent_pt"])  # wrapped lines line up with the text, not the bullet
 
 
 def week_dates(week):

@@ -12,26 +12,16 @@ from app import config
 # Read and write access (the Sheet must also be shared with the robot as Editor)
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# Sheet header text -> field name in our records, in column order (A to K).
-# Part 4 moves this into profiles/worksheet.json.
-COLUMNS = {
-    "Date": "date",
-    "Clock-in": "clock_in",
-    "Clock-out": "clock_out",
-    "Break Time": "break_time",
-    "Hours Worked": "hours",
-    "Mode": "mode",
-    "Tasks Completed": "tasks",
-    "Challenges Faced": "challenges",
-    "Learnings": "learnings",
-    "Next Steps": "next_steps",
-    "Supervisor's Comment": "supervisor_comment",
-}
-
-TOTAL_LABEL = "Total working hours"
+# Structure comes from profiles/worksheet.json
+PROFILE = config.WORKSHEET
+# Sheet header text -> field name in our records, in column order (A to K)
+COLUMNS = PROFILE["columns"]
+DATE_FORMAT = PROFILE["date_format"]
+TOTAL_LABEL = PROFILE["total_label"]
 # Same formulas the existing tabs use; {row} and {last} are filled in by the code
-HOURS_FORMULA = "=C{row}-B{row}-D{row}"
-TOTAL_FORMULA = '=ARRAY_CONSTRAIN(ARRAYFORMULA(TEXT(SUM(IFERROR(TIMEVALUE(E2:E{last}),"")), "[h]:mm:ss")), 1, 1)'
+HOURS_FORMULA = PROFILE["hours_formula"]
+TOTAL_FORMULA = PROFILE["total_formula"]
+WEEKEND_MODE = PROFILE["weekend_mode"]
 
 
 def get_service():
@@ -62,7 +52,7 @@ def read_range(tab, cells, render="FORMATTED_VALUE"):
 
 def tab_name(year, month):
     """Every month has its own tab named like "October2026"."""
-    return f"{calendar.month_name[month]}{year}"
+    return PROFILE["tab_name"].format(month_name=calendar.month_name[month], year=year)
 
 
 def to_serial(day):
@@ -93,7 +83,7 @@ def read_month(year, month):
         # The API drops empty cells at the end of a row, so pad it to full width
         row = row + [""] * (len(COLUMNS) - len(row))
         record = dict(zip(COLUMNS.values(), row))
-        record["date"] = datetime.strptime(record["date"], "%d/%m/%Y").date()
+        record["date"] = datetime.strptime(record["date"], DATE_FORMAT).date()
         records.append(record)
     return records
 
@@ -227,7 +217,7 @@ def create_month_tab(year, month):
     for number in range(1, days + 1):
         day = date(year, month, number)
         row = number + 1  # row 1 is the header
-        mode = "Weekend" if day.weekday() >= 5 else ""  # Saturday = 5, Sunday = 6
+        mode = WEEKEND_MODE if day.weekday() >= 5 else ""  # Saturday = 5, Sunday = 6
         values.append([to_serial(day), 0, 0, 0, HOURS_FORMULA.format(row=row), mode,
                        "", "", "", "", ""])
     values.append([TOTAL_LABEL, "", "", "", TOTAL_FORMULA.format(last=days + 1)])

@@ -1,5 +1,6 @@
 """Loads settings from .env so the rest of the code reads them from one place."""
 
+import json
 import os
 from pathlib import Path
 
@@ -30,3 +31,13 @@ LOGBOOK_PATH = Path(_required("LOGBOOK_PATH"))
 # Remove this on purpose when switching to the real logbook.
 if "Testing" not in LOGBOOK_PATH.name:
     raise RuntimeError(f"LOGBOOK_PATH is not the testing copy: {LOGBOOK_PATH.name}")
+
+
+# Document profiles: structure and style of each document (no IDs or paths)
+def _load_profile(name):
+    with open(PROJECT_ROOT / "profiles" / f"{name}.json", encoding="utf-8") as file:
+        return json.load(file)
+
+
+WORKSHEET = _load_profile("worksheet")
+LOGBOOK = _load_profile("logbook")

@@ -1,0 +1,17 @@
+{
+  "name": "University Logbook (BSD4812)",
+  "week1_monday": "2026-08-17",
+  "week_label": "WEEK:",
+  "first_day_row": 2,
+  "days_per_week": 5,
+  "empty_lines": 4,
+  "font_name": "Times New Roman",
+  "font_size": 12,
+  "date_format": "%d/%m/%Y",
+  "bullet": "•",
+  "bullet_indent_pt": 12,
+  "wording": {
+    "leave": "On leave",
+    "public_holiday": "Public holiday"
+  }
+}
