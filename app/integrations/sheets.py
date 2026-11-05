@@ -96,6 +96,8 @@ def write_day(day, clock_in, clock_out, break_time, mode,
               tasks="", challenges="", learnings="", next_steps="", overwrite=False):
     """Fill in one day's row. Times are "HH:MM" text, e.g. "08:30".
 
+    A value of None means "keep what is there now" (e.g. log update writes the
+    text fields but keeps the clock times the user already entered).
     Never writes Hours Worked (a formula) or Supervisor's Comment.
     Refuses if the row's date is not this day, or if the text cells already
     have something in them (unless overwrite=True).
@@ -115,6 +117,9 @@ def write_day(day, clock_in, clock_out, break_time, mode,
     if any(current[6:10]) and not overwrite:
         raise ValueError(f"{day:%d/%m/%Y} already has entries; not overwriting them")
 
+    def keep_or(value, column, convert=lambda v: v):
+        return current[column] if value is None else convert(value)
+
     get_service().spreadsheets().values().batchUpdate(
         spreadsheetId=config.SHEET_ID,
         body={
@@ -122,11 +127,13 @@ def write_day(day, clock_in, clock_out, break_time, mode,
             "data": [
                 # Columns B-D: times (E is skipped, it holds the Hours formula)
                 {"range": f"'{tab}'!B{row}:D{row}",
-                 "values": [[to_day_fraction(clock_in), to_day_fraction(clock_out),
-                             to_day_fraction(break_time)]]},
+                 "values": [[keep_or(clock_in, 1, to_day_fraction),
+                             keep_or(clock_out, 2, to_day_fraction),
+                             keep_or(break_time, 3, to_day_fraction)]]},
                 # Columns F-J: Mode and the text fields (K is the supervisor's)
                 {"range": f"'{tab}'!F{row}:J{row}",
-                 "values": [[mode, tasks, challenges, learnings, next_steps]]},
+                 "values": [[keep_or(mode, 5), keep_or(tasks, 6), keep_or(challenges, 7),
+                             keep_or(learnings, 8), keep_or(next_steps, 9)]]},
             ],
         },
     ).execute()

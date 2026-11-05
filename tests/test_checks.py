@@ -5,8 +5,9 @@ from datetime import date
 
 from app.integrations.logbook_docx import week_dates, week_header
 from app.integrations.sheets import COLUMNS, HOURS_FORMULA, TOTAL_FORMULA, TOTAL_LABEL, to_serial
+from app.llm.draft import resolve_date
 from app.validation.checks import (
-    check_consistency, check_draft_against_notes, check_logbook, check_month_tab,
+    check_consistency, check_draft_against_notes, check_logbook, check_month_tab, date_in_notes,
 )
 
 TODAY = date(2026, 11, 4)
@@ -237,3 +238,46 @@ def test_dropped_task_is_flagged():
                                               "Replied to the client."])
     assert "The notes have 3 tasks but the draft has 2" in whats(
         check_draft_against_notes(notes, draft))
+
+
+# ---- Log update dates (code decides the year) ----
+
+
+def test_date_without_year_is_the_most_recent_past_one():
+    assert resolve_date("21/10", date(2026, 11, 4)) == date(2026, 10, 21)
+    assert resolve_date("20/12", date(2027, 1, 5)) == date(2026, 12, 20)  # not in the future
+    assert resolve_date("04/11", date(2026, 11, 4)) == date(2026, 11, 4)  # today counts
+
+
+def test_date_with_year_is_kept():
+    assert resolve_date("21/10/2026", date(2027, 1, 5)) == date(2026, 10, 21)
+
+
+def test_drafted_date_must_be_in_the_notes():
+    today = date(2026, 11, 4)
+    assert date_in_notes(date(2026, 11, 4), "today 04/11: fixed a bug", today)
+    assert date_in_notes(date(2026, 10, 21), "21/10\n- fixed a bug", today)
+    assert not date_in_notes(date(2026, 4, 11), "today 04/11: fixed a bug", today)  # swapped
+    assert date_in_notes(date(2026, 11, 4), "fixed a bug", today)  # no date: today
+
+
+def test_weekend_work_missing_in_logbook():
+    _, records = make_logbook(1)
+    findings = check_consistency([sheet_day(date(2026, 8, 22))], records, TODAY)  # Saturday
+    assert "Weekend work is in the Sheet but has no row in the logbook" in whats(findings)
+
+
+def test_weekend_work_in_logbook_row_is_fine():
+    headers, records = make_logbook(1)
+    records.append({"week": 1, "date": date(2026, 8, 22), "date_text": "22/08/2026",
+                    "activities": "• Worked on the project.", "weekend_row": True})
+    assert check_consistency([sheet_day(date(2026, 8, 22))], records, TODAY) == []
+    assert check_logbook(headers, records, TODAY) == []
+
+
+def test_weekend_row_in_the_wrong_week():
+    headers, records = make_logbook(2)
+    records.append({"week": 2, "date": date(2026, 8, 22), "date_text": "22/08/2026",
+                    "activities": "• x", "weekend_row": True})  # 22/08 is Week 1
+    assert "Weekend row 22/08/2026 is in the Week 2 table" in whats(
+        check_logbook(headers, records, TODAY))

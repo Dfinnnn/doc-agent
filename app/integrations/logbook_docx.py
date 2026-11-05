@@ -49,8 +49,25 @@ def cell_text(cell):
     return "\n".join(line for line in lines if line)
 
 
+def week_of(day):
+    return (day - WEEK1_MONDAY).days // 7 + 1
+
+
+def weekend_rows(table):
+    """Extra rows for weekend work: after Friday, before the supervisor row (the last row)."""
+    return table.rows[FIRST_DAY_ROW + DAYS_PER_WEEK:-1]
+
+
+def parse_day(text):
+    try:
+        return datetime.strptime(text.strip(), DATE_FORMAT).date()
+    except ValueError:
+        return None
+
+
 def read_logbook(doc=None):
-    """Return one record (a dict) per day row, with its computed date."""
+    """Return one record (a dict) per day row. Mon-Fri dates are computed from the
+    row position; weekend rows (extra rows) are dated by the date written in them."""
     doc = doc or open_logbook()
     records = []
     for week, table in enumerate(find_week_tables(doc), start=1):
@@ -62,6 +79,13 @@ def read_logbook(doc=None):
                 "date_text": cell_text(row.cells[0]),
                 "activities": cell_text(row.cells[1]),
             })
+        for row in weekend_rows(table):
+            date_text = cell_text(row.cells[0])
+            day = parse_day(date_text)
+            if day is None:
+                continue  # an extra row without a readable date: the audit reports it
+            records.append({"week": week, "date": day, "date_text": date_text,
+                            "activities": cell_text(row.cells[1]), "weekend_row": True})
     return records
 
 
@@ -91,29 +115,56 @@ def set_cell_text(cell, lines, bullets=False):
         run.font.size = Pt(FONT_SIZE)
 
 
-def day_row(doc, day):
-    """Find the table row for a date by computing its week and weekday."""
+def week_table(doc, day):
     if day < WEEK1_MONDAY:
         raise ValueError(f"{day:%d/%m/%Y} is before Week 1")
-    if day.weekday() >= DAYS_PER_WEEK:
-        raise ValueError(f"{day:%d/%m/%Y} is a weekend; weekend rows come in Part 9")
-
-    week = (day - WEEK1_MONDAY).days // 7 + 1
+    week = week_of(day)
     tables = find_week_tables(doc)
     if week > len(tables):
         raise ValueError(f"Week {week} table does not exist yet; add it first")
-    # Only the 5 day rows can be reached, so the supervisor row is never touched
-    return tables[week - 1].rows[FIRST_DAY_ROW + day.weekday()]
+    return tables[week - 1]
 
 
-def write_entry(day, activities, overwrite=False):
+def day_row(doc, day):
+    """Find the table row for a date. Mon-Fri: computed from the date.
+    Saturday/Sunday: the extra row with that date written in it, or None."""
+    table = week_table(doc, day)
+    if day.weekday() < DAYS_PER_WEEK:
+        # Only the day rows can be reached, so the supervisor row is never touched
+        return table.rows[FIRST_DAY_ROW + day.weekday()]
+    for row in weekend_rows(table):
+        if parse_day(cell_text(row.cells[0])) == day:
+            return row
+    return None
+
+
+def add_weekend_row(doc, day):
+    """Add an extra row for weekend work: a copy of Friday's row, emptied, placed
+    after Friday (and after Saturday's row for a Sunday), before the supervisor row."""
+    table = week_table(doc, day)
+    friday = table.rows[FIRST_DAY_ROW + DAYS_PER_WEEK - 1]
+    anchor = friday._tr
+    for row in weekend_rows(table):
+        if (parse_day(cell_text(row.cells[0])) or day) < day:
+            anchor = row._tr  # keep Saturday before Sunday
+    new_tr = deepcopy(friday._tr)
+    anchor.addnext(new_tr)
+    row = next(r for r in table.rows if r._tr is new_tr)
+    clear_cell(row.cells[0])
+    clear_cell(row.cells[1], keep_lines=EMPTY_LINES)
+    return row
+
+
+def write_entry(day, activities, overwrite=False, bullets=True):
     """Write one day's Date and Activities cells, then save the file.
 
-    activities is a list of tasks; each becomes one bullet point.
+    activities is a list of tasks; each becomes one bullet point
+    (bullets=False for plain wording such as "On leave").
+    Weekend work gets its own extra row in that week's table.
     Refuses if the row already has text, unless overwrite=True.
     """
     doc = open_logbook()
-    row = day_row(doc, day)
+    row = day_row(doc, day) or add_weekend_row(doc, day)
     date_cell, activities_cell = row.cells[0], row.cells[1]
 
     if (cell_text(date_cell) or cell_text(activities_cell)) and not overwrite:
@@ -122,20 +173,26 @@ def write_entry(day, activities, overwrite=False):
     # Drop any bullet the text already has ("*", "-", "•"), so it is never doubled
     tasks = [task.strip().lstrip("*-•").strip() for task in activities]
     set_cell_text(date_cell, [f"{day:{DATE_FORMAT}}"])
-    set_cell_text(activities_cell, [task for task in tasks if task], bullets=True)
+    set_cell_text(activities_cell, [task for task in tasks if task], bullets=bullets)
     doc.save(config.LOGBOOK_PATH)  # fails if the file is open in Word
 
 
 def restore_entry(day, date_text, activities_text):
     """Put back a day's cells exactly as read before (used by undo).
 
-    activities_text is cell_text() output, e.g. "• task one\\n• task two", or "".
+    activities_text is cell_text() output, e.g. "• task one\n• task two", or "".
+    A weekend row that was empty before is removed again, since writing added it.
     """
     doc = open_logbook()
     row = day_row(doc, day)
-    tasks = [line.lstrip(BULLET).strip() for line in activities_text.splitlines() if line.strip()]
-    set_cell_text(row.cells[0], [date_text] if date_text else [])
-    set_cell_text(row.cells[1], tasks, bullets=True)
+    if row is None:
+        return  # nothing there: already as before
+    if day.weekday() >= DAYS_PER_WEEK and not date_text and not activities_text:
+        row._tr.getparent().remove(row._tr)
+    else:
+        tasks = [line.lstrip(BULLET).strip() for line in activities_text.splitlines() if line.strip()]
+        set_cell_text(row.cells[0], [date_text] if date_text else [])
+        set_cell_text(row.cells[1], tasks, bullets=True)
     doc.save(config.LOGBOOK_PATH)
 
 
@@ -186,11 +243,13 @@ def add_week_table():
     for run in header.runs[1:]:
         run._r.getparent().remove(run._r)
 
-    # Empty the day rows
+    # Empty the day rows, and drop any weekend rows copied from the previous week
     for offset in range(DAYS_PER_WEEK):
         row = new_table.rows[FIRST_DAY_ROW + offset]
         clear_cell(row.cells[0])
         clear_cell(row.cells[1], keep_lines=EMPTY_LINES)
+    for row in weekend_rows(new_table):
+        row._tr.getparent().remove(row._tr)
 
     doc.save(config.LOGBOOK_PATH)  # fails if the file is open in Word
     return week

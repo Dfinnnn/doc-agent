@@ -8,8 +8,11 @@ import json
 from datetime import date, datetime, timedelta
 
 from app.integrations import logbook_docx, sheets
+from app.llm.draft import draft_log_update, draft_sync, refine_text
 from app.validation import audit as audit_module
-from app.validation.checks import FIRST_DAY
+from app.validation.checks import (
+    FIRST_DAY, LEAVE_WORDING, check_draft_against_notes, date_in_notes,
+)
 
 DATE_FORMAT = "%d/%m/%Y"
 MAX_DAYS = 62  # longest range one read may cover, to keep replies small
@@ -179,8 +182,8 @@ def write_logbook_entries(entries):
         day = parse_date(entry["date"])
         week = (day - logbook_docx.WEEK1_MONDAY).days // 7 + 1
         if day.weekday() >= 5:
-            issues.append(issue("weekend rows are not supported yet (Part 9)", BLOCK))
-        elif week > weeks:
+            issues.append(issue("weekend work: an extra row will be added to this week's table", WARN))
+        if week > weeks:
             issues.append(issue(f"Week {week} table does not exist yet; add_week_table must be approved too", WARN))
         elif existing.get(day, {}).get("activities"):
             issues.append(issue("this day already has an entry", CONFLICT))
@@ -204,10 +207,222 @@ def add_week_table(up_to_week):
     return {"proposed": "add_week_table", "weeks": new, "issues": [], "status": NOT_WRITTEN}
 
 
+# ---- Commands (Part 9): the code drafts and proposes; the LLM only passes the notes ----
+
+def propose_week_tables(up_to_week):
+    """Propose any missing week tables up to this week (once per run). Returns op ids."""
+    weeks = len(logbook_docx.find_week_tables(logbook_docx.open_logbook()))
+    already = {op["proposal"]["week"] for op in CONTEXT["store"].operations(CONTEXT["run_id"])
+               if op["kind"] == "week_table"} if CONTEXT["store"] else set()
+    ops = []
+    for week in range(weeks + 1, up_to_week + 1):
+        if week not in already:
+            ops.append(save_proposal("week_table", f"Week {week}",
+                                     {"week": week, "header": logbook_docx.week_header(week)}, []))
+    return ops
+
+
+def log_update(notes):
+    today = date.today()
+    drafts = draft_log_update(notes, today)
+    logbook = {r["date"]: r for r in logbook_docx.read_logbook()}
+    months = {}
+    summary = []
+    for draft in drafts:
+        day = parse_date(draft["date"])
+        found = check_draft_against_notes(draft["source_notes"] or notes, draft)
+        drafted = [issue(f["what"], WARN) for f in found]
+        if day > today:
+            drafted.append(issue("date is in the future", WARN))
+        if not date_in_notes(day, notes, today):
+            drafted.append(issue(f"{draft['date']} is not a date in your notes (day and month "
+                                 "swapped?): check the date", BLOCK))
+
+        # --- Sheet row: text from the draft; times and Mode only if the notes gave them ---
+        key = (day.year, day.month)
+        if key not in months:
+            try:
+                months[key] = {r["date"]: r for r in sheets.read_month(*key)}
+            except Exception as error:
+                months[key] = error
+        sheet_issues = list(drafted)
+        source = draft["source_notes"] or notes
+        row = {"date": draft["date"], "source": source}
+        for field in ("tasks", "challenges", "learnings", "next_steps"):
+            if draft[field]:
+                row[field] = draft[field]
+        for field in ("mode", "clock_in", "clock_out", "break_time"):
+            if draft[field]:
+                row[field] = draft[field]
+        if isinstance(months[key], Exception):
+            sheet_issues.append(issue(f"{sheets.tab_name(*key)} cannot be read: {months[key]}", BLOCK))
+            existing = {}
+        else:
+            existing = months[key].get(day, {})
+            if any(existing.get(f) for f in SHEET_TEXT_FIELDS):
+                sheet_issues.append(issue("this day already has entries", CONFLICT))
+            if "mode" not in row and existing.get("mode") in ("", sheets.WEEKEND_MODE):
+                sheet_issues.append(issue(
+                    f"Mode is '{existing.get('mode') or 'empty'}' and the notes do not say "
+                    "WFO/WFH: tell me the Mode", WARN))
+            if "clock_in" not in row and existing.get("clock_in") in ("", "00:00:00"):
+                sheet_issues.append(issue("no clock-in time in the Sheet or the notes: tell me "
+                                          "the times", WARN))
+        if draft["missing"]:
+            sheet_issues.append(issue("not in the notes, left as is: " + ", ".join(
+                f for f in draft["missing"] if f in SHEET_TEXT_FIELDS + ["mode"]), WARN))
+        sheet_op = save_proposal("sheet_row", draft["date"], row, sheet_issues)
+
+        # --- Logbook entry (plus any missing week tables) ---
+        log_issues = list(drafted)
+        week = (day - logbook_docx.WEEK1_MONDAY).days // 7 + 1
+        week_ops = propose_week_tables(week)
+        if day.weekday() >= 5:
+            log_issues.append(issue("weekend work: an extra row will be added to this "
+                                    "week's table", WARN))
+        if logbook.get(day, {}).get("activities"):
+            log_issues.append(issue("this day already has an entry", CONFLICT))
+        log_op = save_proposal("logbook_entry", draft["date"],
+                               {"date": draft["date"], "activities": draft["activities"],
+                                "source": source}, log_issues)
+
+        summary.append({"date": draft["date"], "sheet_operation": sheet_op,
+                        "logbook_operation": log_op, "week_table_operations": week_ops,
+                        "missing": draft["missing"],
+                        "issues": [i["text"] for i in sheet_issues + log_issues]})
+    return {"proposed": "log_update", "days": summary, "status": NOT_WRITTEN}
+
+
+SYNC_BATCH = 8  # days per LLM call when rewriting for the logbook
+
+
+def sync(date_from=None, date_to=None):
+    """Sheet (master) -> logbook: every day the Sheet has but the logbook does not."""
+    today = date.today()
+    start = parse_date(date_from) if date_from else FIRST_DAY
+    end = min(parse_date(date_to), today) if date_to else today
+    logbook = {r["date"]: r for r in logbook_docx.read_logbook()}
+
+    to_rewrite, plain, skipped = [], [], []
+    for year, month in months_between(start, end):
+        try:
+            records = sheets.read_month(year, month)
+        except Exception as error:
+            skipped.append(f"{sheets.tab_name(year, month)}: {error}")
+            continue
+        for r in records:
+            day = r["date"]
+            if not (max(start, FIRST_DAY) <= day <= end):
+                continue
+            if logbook.get(day, {}).get("activities"):
+                continue  # already in the logbook
+            wording = LEAVE_WORDING.get(r["mode"]) if day.weekday() < 5 else None
+            if wording:
+                plain.append((day, wording))
+            elif r["tasks"]:
+                to_rewrite.append({"date": f"{day:{DATE_FORMAT}}", "tasks": r["tasks"]})
+
+    rewritten = {}
+    for i in range(0, len(to_rewrite), SYNC_BATCH):
+        rewritten.update(draft_sync(to_rewrite[i:i + SYNC_BATCH]))
+
+    proposed = []
+    if to_rewrite or plain:
+        last = max([parse_date(d["date"]) for d in to_rewrite] + [d for d, _ in plain])
+        propose_week_tables(logbook_docx.week_of(last))
+    for day, wording in plain:
+        proposed.append(save_proposal("logbook_entry", f"{day:{DATE_FORMAT}}",
+                                      {"date": f"{day:{DATE_FORMAT}}", "activities": [wording],
+                                       "bullets": False}, []))
+    for item in to_rewrite:
+        activities = rewritten.get(item["date"])
+        if not activities:
+            skipped.append(f"{item['date']}: the rewrite failed, try syncing this day again")
+            continue
+        issues = []
+        day = parse_date(item["date"])
+        if day.weekday() >= 5:
+            issues.append(issue("weekend work: an extra row will be added to this week's table", WARN))
+        draft = {"tasks": "", "challenges": "", "learnings": "", "next_steps": "",
+                 "activities": activities}
+        issues += [issue(f["what"], WARN) for f in check_draft_against_notes(item["tasks"], draft)]
+        task_lines = [line for line in item["tasks"].splitlines() if line.strip()]
+        if len(activities) < len(task_lines):
+            issues.append(issue(f"the Sheet has {len(task_lines)} tasks but the rewrite has "
+                                f"{len(activities)}", WARN))
+        proposed.append(save_proposal("logbook_entry", item["date"],
+                                      {"date": item["date"], "activities": activities,
+                                       "source": item["tasks"]}, issues))
+    return {"proposed": "sync", "logbook_entries": len(proposed),
+            "skipped": skipped, "status": NOT_WRITTEN}
+
+
+def refine_entry(document, day, instruction):
+    """Rewrite an existing entry following the user's instruction (old value kept for undo)."""
+    target = parse_date(day)
+    if document == "sheet":
+        records = {r["date"]: r for r in sheets.read_month(target.year, target.month)}
+        record = records.get(target, {})
+        fields = {f: record[f] for f in SHEET_TEXT_FIELDS if record.get(f)}
+        kind = "sheet_row"
+    elif document == "logbook":
+        record = next((r for r in logbook_docx.read_logbook() if r["date"] == target), {})
+        lines = [line.lstrip(logbook_docx.BULLET).strip()
+                 for line in record.get("activities", "").splitlines() if line.strip()]
+        fields = {"activities": lines} if lines else {}
+        kind = "logbook_entry"
+    else:
+        raise ValueError("document must be 'sheet' or 'logbook'")
+    if not fields:
+        return {"error": f"{day} has no {document} entry to refine"}
+
+    facts = "\n".join(v if isinstance(v, str) else "\n".join(v) for v in fields.values())
+    new, changes = refine_text(fields, facts, instruction)
+    draft = {"tasks": "", "challenges": "", "learnings": "", "next_steps": "", "activities": []}
+    found = check_draft_against_notes(f"{facts}\n{instruction}", {**draft, **new})
+    issues = [issue("replaces the current entry; the old text is saved for undo", WARN)]
+    issues += [issue(f["what"], WARN) for f in found]
+    op = save_proposal(kind, f"{target:{DATE_FORMAT}}",
+                       {"date": f"{target:{DATE_FORMAT}}", **new, "source": facts,
+                        "overwrite": True}, issues)
+    return {"proposed": "refine", "operation": op, "changes": changes, "status": NOT_WRITTEN}
+
+
 DATE_PARAM = {"type": "string", "description": "Date as dd/mm/yyyy"}
 TIME_PARAM = {"type": "string", "description": "Time as HH:MM (24h)"}
 
 TOOLS = {
+    "refine_entry": {
+        "function": refine_entry,
+        "description": "Rewrite an EXISTING entry in the work log ('sheet') or the logbook "
+                       "('logbook') for one date, following the user's instruction (e.g. "
+                       "'more detailed', 'shorter', 'mention the CIMB samples'). The app shows "
+                       "old vs new for approval; the old text is kept for undo.",
+        "parameters": {"document": {"type": "string", "enum": ["sheet", "logbook"]},
+                       "day": DATE_PARAM,
+                       "instruction": {"type": "string", "description": "What to change"}},
+        "required": ["document", "day", "instruction"],
+    },
+    "sync": {
+        "function": sync,
+        "description": "Copy work-log days into the logbook where the logbook has no entry: "
+                       "tasks are rewritten in logbook style, Leave and Public Holiday days "
+                       "get plain wording, missing week tables are added. Dates are optional "
+                       "(default: from the internship start to today). The app shows "
+                       "everything for approval.",
+        "parameters": {"date_from": {**DATE_PARAM, "description": "Start date (optional)"},
+                       "date_to": {**DATE_PARAM, "description": "End date (optional)"}},
+        "required": [],
+    },
+    "log_update": {
+        "function": log_update,
+        "description": "Log the user's work notes into BOTH the work log and the logbook. "
+                       "Pass the user's notes exactly as written, all dates included; do not "
+                       "rewrite them. The app drafts the entries, checks them and shows them "
+                       "for approval. Use this whenever the user asks to log or record their work.",
+        "parameters": {"notes": {"type": "string", "description": "The user's notes, unchanged"}},
+        "required": ["notes"],
+    },
     "read_sheet": {
         "function": read_sheet,
         "description": "Read the company work log (Google Sheet) for a date or date range. "

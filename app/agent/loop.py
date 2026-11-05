@@ -4,13 +4,14 @@ Run with: python -m app.agent.loop
 """
 
 import json
+import re
 import time
 from datetime import date
 
 from app import config
 from app.agent.approval import format_events, review, undo
 from app.llm.openai_compat import OpenAICompatLLM
-from app.store.db import Store
+from app.store.db import WRITTEN, Store
 from app.tools.registry import run_tool, set_context, tool_schemas
 
 MAX_ROUNDS = 8  # tool rounds per message, so the loop can never run forever
@@ -23,18 +24,23 @@ use the most recent date that is not in the future. Pass dates to tools as dd/mm
 
 What you can do now: read both records, search them, run the audit, and PROPOSE
 changes. After your answer, the app shows the proposals to the user, who approves
-or rejects them; the app does the writing and reports it, not you. Commands like
-"sync" or "refine" do not exist yet. If asked whether you can do these, say no,
-not yet, and say what you can do instead.
+or rejects them; the app does the writing and reports it, not you. To change a
+draft that is waiting for approval, the user types "r <number> <change>" at the
+approval prompt. If asked for something you cannot do, say no, not yet, and say
+what you can do instead.
 
 Rules:
 - Answer only from tool results. If the records do not say, say so; never guess.
 - Never invent a value the user did not give: no times, Mode, challenges,
   learnings, next steps, clients or causes from your own guess or from other
   days. Leave it out and ask the user for it.
+- To log work, call log_update with the user's notes exactly as written. Do not
+  draft the entries yourself and do not use write_sheet_rows for this.
 - If the user asks how something would be written, show the text; do not call
   write tools. Call write tools only when the user asks to log or write.
 - Write tools only propose changes. Never say that something was saved or written.
+- Undo is done by the app: the user types "undo" (the last approved changes) or
+  "undo 3" / "undo 3,5" (those change numbers). If asked to undo, tell them this.
 - Read only what the question needs. Do not search other dates for examples.
 - Records change between messages (the user approves writes and undoes them).
   When asked what a record holds now, read it again; do not answer from earlier results.
@@ -88,6 +94,21 @@ def ask(llm, messages, tools, record):
     return reply["content"] or "(no answer)"
 
 
+def undo_targets(text, store):
+    """Which operations an undo command means, or None if it is not an undo command.
+
+    "undo" / "undo all" / "undo last": every written change of the last run that wrote.
+    "undo 6" / "undo 6,14" / "undo #6 #14": those operations.
+    """
+    text = text.strip().lower()
+    if re.fullmatch(r"undo(\s+(for\s+)?(all|last|everything))?", text):
+        run = store.last_written_run()
+        return [op["id"] for op in store.operations(run, WRITTEN)] if run else []
+    if re.fullmatch(r"undo\s+#?\d+([\s,]+#?\d+)*", text):
+        return [int(n) for n in re.findall(r"\d+", text)]
+    return None
+
+
 def tell_agent(messages, lines):
     """Let the LLM know what the app wrote or undid, so it does not rely on old reads."""
     if lines:
@@ -103,7 +124,8 @@ def main():
     messages = [{"role": "system",
                  "content": SYSTEM_PROMPT.format(today=f"{date.today():%A %d/%m/%Y}")}]
     print(f"Agent ready ({config.LLM_PROVIDER} / {config.LLM_MODEL}).")
-    print("Commands: 'log' (last run's activity), 'log 5', 'undo 3', 'exit'.")
+    print("Commands: 'log' (last run's activity), 'log 5', 'undo' (last approved changes), "
+          "'undo 3' or 'undo 3,5', 'exit'.")
     while True:
         text = input("\nyou> ").strip()
         if text.lower() in ("exit", "quit"):
@@ -119,10 +141,16 @@ def main():
             continue
 
         run_id = store.start_run(text, config.LLM_PROVIDER, config.LLM_MODEL)
-        if words[0] == "undo" and len(words) == 2 and words[1].isdigit():
-            result = undo(store, int(words[1]), lambda kind, data: store.log(run_id, kind, data))
-            print(f"\n{result}")
-            tell_agent(messages, [result])
+        to_undo = undo_targets(text, store)
+        if to_undo is not None:
+            if not to_undo:
+                results = ["There are no written changes to undo."]
+            else:
+                # Newest first, so changes to the same cell unwind in the right order
+                results = [undo(store, op_id, lambda kind, data: store.log(run_id, kind, data))
+                           for op_id in sorted(to_undo, reverse=True)]
+            print("\n" + "\n".join(results))
+            tell_agent(messages, results)
             continue
         set_context(store, run_id)  # write tools save their proposals to this run
 

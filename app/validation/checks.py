@@ -204,6 +204,14 @@ def check_logbook(headers, records, today):
     for record in records:
         day, text = record["date"], record["date_text"]
         where = f"Week {record['week']}, {day:%A} row"
+        if record.get("weekend_row"):
+            # Extra rows are dated by their own text: it must fall in this week
+            if (day - FIRST_DAY).days // 7 + 1 != record["week"]:
+                findings.append(finding(
+                    where, f"Weekend row {text} is in the Week {record['week']} table",
+                    "the row was added to the wrong week", "block",
+                    "move it to its own week's table"))
+            continue
         expected = f"{day:{LOGBOOK_DATE_FORMAT}}"
         if text and text != expected:
             try:
@@ -237,24 +245,32 @@ def check_consistency(sheet_records, logbook_records, today):
 
     sheet_records: read_month() records for the months to compare.
     logbook_records: read_logbook() records.
-    Weekend work is not compared yet (the logbook gets extra rows for it in Part 9).
+    Weekend days are compared only when the Sheet has work on them (an extra row).
     """
     findings = []
     logbook = {record["date"]: record for record in logbook_records}
+    weeks_present = max((record["week"] for record in logbook_records), default=0)
     missing_weeks = set()
 
     for sheet in sheet_records:
         day = sheet["date"]
-        if day < FIRST_DAY or day > today or day.weekday() >= 5:
+        weekend = day.weekday() >= 5
+        if day < FIRST_DAY or day > today or (weekend and not sheet["tasks"]):
             continue
         week = (day - FIRST_DAY).days // 7 + 1
         entry = logbook.get(day)
-        expected_text = LEAVE_WORDING.get(sheet["mode"])
+        expected_text = None if weekend else LEAVE_WORDING.get(sheet["mode"])
         needs_entry = bool(sheet["tasks"]) or expected_text
 
         if entry is None:
-            if needs_entry:
+            if needs_entry and week > weeks_present:
                 missing_weeks.add(week)
+            elif needs_entry:  # only weekend days have no row in an existing table
+                findings.append(finding(
+                    f"{day:%d/%m/%Y} (Sheet row / logbook Week {week})",
+                    "Weekend work is in the Sheet but has no row in the logbook",
+                    "the logbook was not updated after the Sheet", "warn",
+                    "sync this day: an extra row is added to that week's table"))
             continue
         where = f"{day:%d/%m/%Y} (Sheet row / logbook Week {week})"
         if needs_entry and not entry["activities"]:
@@ -318,3 +334,12 @@ def check_draft_against_notes(notes, draft):
             f"{len(draft['activities'])}", "tasks were merged or dropped", "warn",
             "redraft with one entry per task"))
     return findings
+
+
+def date_in_notes(day, notes, today):
+    """True if the drafted date is really in the notes (as d/m or dd/mm), or the notes
+    have no date / say "today" and the date is today. Catches swapped day and month."""
+    if re.search(rf"(?<!\d)0?{day.day}/0?{day.month}(?!\d)", notes):
+        return True
+    has_dates = re.search(r"(?<!\d)\d{1,2}/\d{1,2}(?!\d)", notes)
+    return day == today and (not has_dates or "today" in notes.lower())

@@ -2,10 +2,13 @@
 then the code writes them and saves before/after values.
 """
 
+import re
 from datetime import datetime
 
 from app.integrations import logbook_docx, sheets
+from app.llm.draft import refine_text
 from app.store.db import APPROVED, FAILED, PROPOSED, REJECTED, UNDONE, WRITTEN
+from app.validation.checks import DRAFT_TEXT_FIELDS, check_draft_against_notes
 
 DATE_FORMAT = "%d/%m/%Y"
 # Structure first, so entries find their tab / week table when they are written
@@ -33,6 +36,11 @@ def current_value(op):
     return None
 
 
+def indent(text):
+    """Line up multi-line text under the first line in the preview."""
+    return str(text).replace("\n", "\n             ")
+
+
 def describe(op):
     """A short preview of one operation: before -> after and its issues."""
     lines = [f" #{op['id']}  {op['kind']}  {op['target']}"]
@@ -43,16 +51,23 @@ def describe(op):
         except Exception as error:  # e.g. the tab does not exist yet
             before = {"(cannot read)": str(error)}
         for field in SHEET_FIELDS:
-            old, new = before.get(field, ""), proposal.get(field, "")
-            if old or new:
-                lines.append(f"     {field}: {old or '(empty)'}  ->  {new or '(empty)'}")
+            if field not in proposal or before.get(field, "") == proposal[field]:
+                continue  # not changed by this operation
+            old, new = before.get(field, ""), proposal[field]
+            lines.append(f"     {field}: {indent(old or '(empty)')}")
+            lines.append(f"       ->  {indent(new or '(empty)')}")
+        kept = [f for f in SHEET_FIELDS
+                if f not in proposal or before.get(f, "") == proposal[f]]
+        if kept:
+            lines.append(f"     kept as is: {', '.join(kept)}")
     elif op["kind"] == "logbook_entry":
         try:
             before = current_value(op)["activities"].replace("\n", " | ") or "(empty)"
         except Exception:
             before = "(no row yet)"
         lines.append(f"     before: {before}")
-        lines.append("     after:  " + " | ".join(f"• {a}" for a in proposal["activities"]))
+        mark = "• " if proposal.get("bullets", True) else ""
+        lines.append("     after:  " + indent("\n".join(f"{mark}{a}" for a in proposal["activities"])))
     elif op["kind"] == "week_table":
         lines.append(f"     add table: {proposal['header']}")
     elif op["kind"] == "month_tab":
@@ -84,17 +99,20 @@ def execute(op, choice):
     before = current_value(op)
     day = day_of(op)
     if op["kind"] == "sheet_row":
-        values = {field: proposal.get(field, "") for field in SHEET_FIELDS}
+        # A field missing from the proposal is None: write_day keeps what is there
+        values = {field: proposal.get(field) for field in SHEET_FIELDS}
         if choice == "append":
             for field in SHEET_TEXT_FIELDS:
-                values[field] = merge_text(before[field], values[field])
+                if values[field] is not None:
+                    values[field] = merge_text(before[field], values[field])
         sheets.write_day(day, **values, overwrite=choice in ("overwrite", "append"))
     else:  # logbook_entry
         activities = list(proposal["activities"])
         if choice == "append":
             old = [line.lstrip("•").strip() for line in before["activities"].splitlines()]
             activities = [a for a in old if a] + activities
-        logbook_docx.write_entry(day, activities, overwrite=choice in ("overwrite", "append"))
+        logbook_docx.write_entry(day, activities, overwrite=choice in ("overwrite", "append"),
+                                 bullets=proposal.get("bullets", True))
     return before, current_value(op)  # read back what is really there now
 
 
@@ -111,25 +129,62 @@ def ask_approval(ops, input_fn):
     """Ask which operations to write. Returns (approved ids, the answer typed).
 
     y = all, n = none, or the #numbers shown in the preview (e.g. "1" or "1,3").
+    "r 14 make it shorter" asks to refine #14 first: returns (None, (14, "make it shorter")).
     Re-asks if a number is not in the preview, so a typo never rejects silently.
     """
     ids = [op["id"] for op in ops]
     if len(ids) == 1:
-        question = f"\nApprove #{ids[0]}? (y = yes, write it / n = no): "
+        question = (f"\nApprove #{ids[0]}? (y = yes, write it / n = no / "
+                    f"r = refine it first, e.g. 'r make it shorter'): ")
     else:
         numbers = ", ".join(f"#{i}" for i in ids)
         question = (f"\nApprove which? y = all, n = none, or type the numbers to write "
-                    f"only some (shown as {numbers}; e.g. {ids[0]},{ids[1]}): ")
+                    f"only some (shown as {numbers}; e.g. {ids[0]},{ids[1]}).\n"
+                    f"To change a draft first: r <number> <what to change>, "
+                    f"e.g. 'r {ids[-1]} make it shorter': ")
     while True:
-        answer = input_fn(question).strip().lower()
-        if answer == "y":
+        answer = input_fn(question).strip()
+        lower = answer.lower()
+        if lower == "y":
             return set(ids), answer
-        if answer == "n":
+        if lower == "n":
             return set(), answer
-        parts = answer.replace("#", "").replace(" ", "").split(",")
+        refine = re.fullmatch(r"r\s+#?(\d+)\s+(.+)", answer, re.IGNORECASE)
+        if refine and int(refine.group(1)) in ids:
+            return None, (int(refine.group(1)), refine.group(2))
+        refine_one = re.fullmatch(r"r\s+(\D.*)", answer, re.IGNORECASE)
+        if refine_one and len(ids) == 1:
+            return None, (ids[0], refine_one.group(1))
+        parts = lower.replace("#", "").replace(" ", "").split(",")
         if parts and all(part.isdigit() and int(part) in ids for part in parts):
             return {int(part) for part in parts}, answer
-        print(f"   Please type y, n, or numbers from this list: {', '.join(map(str, ids))}")
+        print(f"   Please type y, n, numbers from this list: {', '.join(map(str, ids))}, "
+              f"or r <number> <what to change>")
+
+
+def refine_op(store, op, instruction):
+    """Rewrite a proposed draft following the user's instruction. Nothing is written.
+    Returns a message saying what changed."""
+    proposal = dict(op["proposal"])
+    if op["kind"] == "sheet_row":
+        fields = {f: proposal[f] for f in SHEET_TEXT_FIELDS if f in proposal}
+    elif op["kind"] == "logbook_entry" and proposal.get("bullets", True):
+        fields = {"activities": proposal["activities"]}
+    else:
+        fields = {}
+    if not fields:
+        return f"#{op['id']} has no draft text to refine."
+    facts = proposal.get("source", "")
+    new, changes = refine_text(fields, facts, instruction)
+    proposal.update(new)
+    # Re-run the draft checks against the facts plus anything the instruction states
+    draft = {f: "" for f in DRAFT_TEXT_FIELDS} | {"activities": []} | new
+    found = check_draft_against_notes(f"{facts}\n{instruction}", draft)
+    issues = [i for i in op["issues"]
+              if not i["text"].startswith(("Possible added fact", "The notes have"))]
+    issues += [{"text": f["what"], "severity": "warn"} for f in found]
+    store.update_proposal(op["id"], proposal, issues)
+    return f"#{op['id']} refined: {changes or 'rewritten as asked'}"
 
 
 def review(store, run_id, record, input_fn=input):
@@ -149,7 +204,20 @@ def review(store, run_id, record, input_fn=input):
         print(describe(op))
     record("preview", {"operations": [op["id"] for op in ops]})
 
-    chosen, answer = ask_approval(ops, input_fn)
+    while True:
+        chosen, answer = ask_approval(ops, input_fn)
+        if chosen is not None:
+            break
+        op_id, instruction = answer  # refine a draft, show it again, then ask again
+        op = next(o for o in ops if o["id"] == op_id)
+        try:
+            message = refine_op(store, op, instruction)
+        except Exception as error:
+            message = f"#{op_id} could not be refined: {type(error).__name__}: {error}"
+        record("refine", {"operation": op_id, "instruction": instruction, "result": message})
+        print(f"\n   {message}")
+        ops = sorted(store.operations(run_id, PROPOSED), key=lambda o: (ORDER[o["kind"]], o["id"]))
+        print(describe(next(o for o in ops if o["id"] == op_id)))
     record("decision", {"answer": answer, "approved": sorted(chosen)})
 
     for op in ops:
@@ -161,8 +229,9 @@ def review(store, run_id, record, input_fn=input):
             store.update_operation(op["id"], REJECTED, error="blocked: cannot be approved")
             report(f"#{op['id']} skipped: it has a block issue")
             continue
-        choice = "write"
-        if any(i["severity"] == "conflict" for i in op["issues"]):
+        # A refine of an existing entry is an intended overwrite: no need to ask again
+        choice = "overwrite" if op["proposal"].get("overwrite") else "write"
+        if choice == "write" and any(i["severity"] == "conflict" for i in op["issues"]):
             choice = ask_choice(op, input_fn)
             if choice == "skip":
                 store.update_operation(op["id"], REJECTED, error="skipped by user")

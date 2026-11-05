@@ -81,6 +81,12 @@ class Store:
         rows = self.conn.execute("SELECT * FROM events WHERE run_id = ? ORDER BY id", (run_id,))
         return [to_dict(row) for row in rows]
 
+    def last_written_run(self):
+        """The most recent run that has written changes (None if there is none)."""
+        row = self.conn.execute(
+            "SELECT MAX(run_id) FROM operations WHERE status = ?", (WRITTEN,)).fetchone()
+        return row[0]
+
     def last_run_id(self):
         row = self.conn.execute("SELECT MAX(id) FROM runs").fetchone()
         return row[0]
@@ -104,6 +110,14 @@ class Store:
         if status:
             sql, values = sql + " AND status = ?", values + [status]
         return [to_dict(row) for row in self.conn.execute(sql + " ORDER BY id", values)]
+
+    def update_proposal(self, op_id, proposal, issues):
+        """Replace a still-proposed operation's content (used when refining a draft)."""
+        self.conn.execute(
+            "UPDATE operations SET proposal = ?, issues = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(proposal, ensure_ascii=False), json.dumps(issues, ensure_ascii=False),
+             now(), op_id))
+        self.conn.commit()
 
     def update_operation(self, op_id, status, **fields):
         """Change an operation's status, and optionally before / after / error."""
