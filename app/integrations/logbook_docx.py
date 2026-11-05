@@ -28,6 +28,77 @@ DATE_ALIGN = getattr(WD_ALIGN_PARAGRAPH, PROFILE["date_align"].upper())  # e.g. 
 BULLET_INDENT = Pt(PROFILE["bullet_indent_pt"])  # wrapped lines line up with the text, not the bullet
 
 
+def refresh_style():
+    """Re-read the style settings after the profile changed (font, size, date alignment)."""
+    global FONT_NAME, FONT_SIZE, DATE_ALIGN
+    FONT_NAME = PROFILE["font_name"]
+    FONT_SIZE = PROFILE["font_size"]
+    DATE_ALIGN = getattr(WD_ALIGN_PARAGRAPH, PROFILE["date_align"].upper())
+
+
+# Settings the user may change by chat (structure such as columns or tables may not).
+# name -> (path in the profile, how to check and convert the value)
+def _font_size(value):
+    size = int(value)
+    if not 8 <= size <= 20:
+        raise ValueError("font size must be between 8 and 20")
+    return size
+
+
+def _align(value):
+    value = str(value).lower()
+    if value not in ("left", "center", "right"):
+        raise ValueError("alignment must be left, center or right")
+    return value
+
+
+def _week(value):
+    week = int(value)
+    if not 0 <= week <= 24:
+        raise ValueError("signed week must be between 0 and 24")
+    return week
+
+
+def _text(value):
+    value = str(value).strip()
+    if not value:
+        raise ValueError("the value cannot be empty")
+    return value
+
+
+SETTINGS = {
+    "font_name": (["font_name"], _text),
+    "font_size": (["font_size"], _font_size),
+    "date_align": (["date_align"], _align),
+    "leave_wording": (["wording", "leave"], _text),
+    "public_holiday_wording": (["wording", "public_holiday"], _text),
+    "signed_up_to_week": (["signed_up_to_week"], _week),
+}
+
+
+def get_setting(name):
+    value = PROFILE
+    for key in SETTINGS[name][0]:
+        value = value.get(key) if isinstance(value, dict) else None
+    return value
+
+
+def set_setting(name, value):
+    """Change one whitelisted setting in the profile, save the file, refresh the style."""
+    path = SETTINGS[name][0]
+    target = PROFILE
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    config.save_profile("logbook", PROFILE)
+    refresh_style()
+
+
+def signed_week(day):
+    """True if this date is in a week the supervisor has already signed (on the PDF)."""
+    return week_of(day) <= PROFILE.get("signed_up_to_week", 0)
+
+
 def week_dates(week):
     """Return the 5 dates (Mon-Fri) of a week, e.g. week_dates(1) -> 17/08 to 21/08."""
     monday = WEEK1_MONDAY + timedelta(weeks=week - 1)
@@ -200,6 +271,33 @@ def restore_entry(day, date_text, activities_text):
         set_cell_text(row.cells[0], [date_text] if date_text else [], align=DATE_ALIGN)
         set_cell_text(row.cells[1], tasks, bullets=True, align=WD_ALIGN_PARAGRAPH.LEFT)
     doc.save(config.LOGBOOK_PATH)
+
+
+def reformat_entries(replace_wording=None):
+    """Apply the current font, size and alignment to every written entry, then save.
+
+    replace_wording: {old text: new text} for plain rows such as "On leave".
+    Only Date and Activities cells of day rows are touched; never the supervisor row.
+    Returns how many entries were reformatted.
+    """
+    doc = open_logbook()
+    count = 0
+    for table in find_week_tables(doc):
+        rows = table.rows[FIRST_DAY_ROW:FIRST_DAY_ROW + DAYS_PER_WEEK] + weekend_rows(table)
+        for row in rows:
+            date_text, activities = cell_text(row.cells[0]), cell_text(row.cells[1])
+            if not (date_text or activities):
+                continue
+            lines = activities.splitlines()
+            bullets = any(line.startswith(BULLET) for line in lines)
+            tasks = [line.lstrip(BULLET).strip() for line in lines]
+            if replace_wording and not bullets and activities in replace_wording:
+                tasks = [replace_wording[activities]]
+            set_cell_text(row.cells[0], [date_text] if date_text else [], align=DATE_ALIGN)
+            set_cell_text(row.cells[1], tasks, bullets=bullets, align=WD_ALIGN_PARAGRAPH.LEFT)
+            count += 1
+    doc.save(config.LOGBOOK_PATH)
+    return count
 
 
 def week_header(week):

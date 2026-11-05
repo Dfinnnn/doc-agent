@@ -34,6 +34,9 @@ Rules:
 - Never invent a value the user did not give: no times, Mode, challenges,
   learnings, next steps, clients or causes from your own guess or from other
   days. Leave it out and ask the user for it.
+- For a format change (font, size, date alignment, leave wording), call
+  change_setting; the app asks the user whether to also reformat existing entries.
+  Columns and tables cannot be changed by chat.
 - To log work, call log_update with the user's notes exactly as written. Do not
   draft the entries yourself and do not use write_sheet_rows for this.
 - If the user asks how something would be written, show the text; do not call

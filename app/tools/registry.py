@@ -8,7 +8,7 @@ import json
 from datetime import date, datetime, timedelta
 
 from app.integrations import logbook_docx, sheets
-from app.llm.draft import draft_log_update, draft_sync, refine_text
+from app.llm.draft import draft_log_update, draft_sync, refine_text, summarize_days
 from app.validation import audit as audit_module
 from app.validation.checks import (
     FIRST_DAY, LEAVE_WORDING, check_draft_against_notes, date_in_notes,
@@ -123,6 +123,9 @@ def save_proposal(kind, target, proposal, issues):
     """Save one proposed change as an operation; returns its id (None if no store)."""
     if CONTEXT["store"] is None:
         return None
+    if kind == "logbook_entry" and logbook_docx.signed_week(parse_date(target)):
+        issues = issues + [issue("this week is signed: the .docx will no longer match the "
+                                 "signed PDF", WARN)]
     return CONTEXT["store"].add_operation(CONTEXT["run_id"], kind, target, proposal, issues)
 
 
@@ -404,10 +407,109 @@ def refine_one_entry(document, target, instruction):
     return {"proposed": "refine", "operation": op, "changes": changes, "status": NOT_WRITTEN}
 
 
+SUMMARY_FIELDS = ["mode", "tasks", "challenges", "learnings", "next_steps"]
+
+
+def summarize(scope, project=None, month=None, year=None, date_from=None, date_to=None):
+    """Summarize the work log for a project, a month or a date range."""
+    today = date.today()
+    if scope == "project":
+        if not project:
+            raise ValueError("project is needed for a project summary")
+        needle, days = project.lower(), []
+        for y, m in months_between(FIRST_DAY, today):
+            try:
+                records = sheets.read_month(y, m)
+            except Exception:
+                continue
+            days += [r for r in records
+                     if any(needle in r[f].lower() for f in SHEET_TEXT_FIELDS)]
+        label = f"project '{project}'"
+    elif scope == "month":
+        if not month:
+            raise ValueError("month is needed for a month summary")
+        year = year or (today.year if month <= today.month else today.year - 1)
+        days = sheets.read_month(year, month)
+        label = sheets.tab_name(year, month)
+    elif scope == "range":
+        start, end = parse_range(date_from, date_to)
+        days = []
+        for y, m in months_between(start, end):
+            days += [r for r in sheets.read_month(y, m) if start <= r["date"] <= end]
+        label = f"{date_from} to {date_to}"
+    else:
+        raise ValueError("scope must be 'project', 'month' or 'range'")
+
+    days = [{"date": f"{r['date']:%d/%m}", **{f: r[f] for f in SUMMARY_FIELDS if r[f]}}
+            for r in days if r["tasks"]]
+    if not days:
+        return {"scope": label, "summary": "", "days_used": 0,
+                "note": "No work-log days with tasks match this."}
+    return {"scope": label, "days_used": len(days), "summary": summarize_days(label, days)}
+
+
+def change_setting(setting, value, apply_to="future"):
+    """Propose changing a whitelisted logbook setting."""
+    if setting not in logbook_docx.SETTINGS:
+        return {"error": f"'{setting}' cannot be changed by chat. Allowed: "
+                         f"{', '.join(logbook_docx.SETTINGS)}. Columns and tables cannot be changed."}
+    new = logbook_docx.SETTINGS[setting][1](value)
+    old = logbook_docx.get_setting(setting)
+    if setting == "signed_up_to_week":
+        apply_to = "future"  # a flag, nothing to reformat
+    issues = []
+    if new == old and apply_to != "all":
+        issues.append(issue(f"{setting} is already {old}", BLOCK))
+    elif new == old:
+        issues.append(issue(f"{setting} is already {old}: this only reformats existing "
+                             "entries to match it", WARN))
+    if apply_to == "all":
+        issues.append(issue("reformats every entry already written in the logbook", WARN))
+        signed = logbook_docx.get_setting("signed_up_to_week")
+        if signed:
+            issues.append(issue(f"Weeks 1-{signed} are signed: the .docx will no longer match "
+                                "the signed PDF", WARN))
+    op = save_proposal("setting", setting,
+                       {"setting": setting, "old": old, "new": new, "apply_to": apply_to}, issues)
+    return {"proposed": "change_setting", "operation": op, "old": old, "new": new,
+            "apply_to": apply_to, "status": NOT_WRITTEN}
+
+
 DATE_PARAM = {"type": "string", "description": "Date as dd/mm/yyyy"}
 TIME_PARAM = {"type": "string", "description": "Time as HH:MM (24h)"}
 
 TOOLS = {
+    "change_setting": {
+        "function": change_setting,
+        "description": "Propose changing a logbook format setting: font_name, font_size, "
+                       "date_align (left/center/right), leave_wording, public_holiday_wording, "
+                       "or signed_up_to_week (the last week the supervisor signed, e.g. 12). "
+                       "apply_to: 'future' (new entries only) or 'all' (also reformat existing "
+                       "entries). The app also asks the user to confirm this at approval.",
+        "parameters": {
+            "setting": {"type": "string", "enum": ["font_name", "font_size", "date_align",
+                                                   "leave_wording", "public_holiday_wording",
+                                                   "signed_up_to_week"]},
+            "value": {"type": "string"},
+            "apply_to": {"type": "string", "enum": ["future", "all"]},
+        },
+        "required": ["setting", "value"],
+    },
+    "summarize": {
+        "function": summarize,
+        "description": "Summarize the work log for a project (all days that mention it), a "
+                       "month, or a date range. Returns a summary built only from the entries, "
+                       "with the dates each point comes from. Show it to the user as it is.",
+        "parameters": {
+            "scope": {"type": "string", "enum": ["project", "month", "range"]},
+            "project": {"type": "string", "description": "Project or client name (scope=project)"},
+            "month": {"type": "integer", "description": "1-12 (scope=month)"},
+            "year": {"type": "integer", "description": "Year (scope=month, optional)"},
+            "date_from": {**DATE_PARAM, "description": "Start date (scope=range)"},
+            "date_to": {**DATE_PARAM, "description": "End date (scope=range)"},
+        },
+        "required": ["scope"],
+    },
     "refine_entry": {
         "function": refine_entry,
         "description": "Rewrite EXISTING entries in the work log ('sheet') or the logbook "

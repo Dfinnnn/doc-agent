@@ -12,7 +12,8 @@ from app.validation.checks import DRAFT_TEXT_FIELDS, check_draft_against_notes
 
 DATE_FORMAT = "%d/%m/%Y"
 # Structure first, so entries find their tab / week table when they are written
-ORDER = {"month_tab": 0, "week_table": 1, "sheet_row": 2, "logbook_entry": 3}
+# Settings first (so entries in the same approval use them), then structure, then entries
+ORDER = {"setting": -1, "month_tab": 0, "week_table": 1, "sheet_row": 2, "logbook_entry": 3}
 SHEET_FIELDS = ["clock_in", "clock_out", "break_time", "mode",
                 "tasks", "challenges", "learnings", "next_steps"]
 SHEET_TEXT_FIELDS = ["tasks", "challenges", "learnings", "next_steps"]
@@ -72,9 +73,38 @@ def describe(op):
         lines.append(f"     add table: {proposal['header']}")
     elif op["kind"] == "month_tab":
         lines.append(f"     add tab: {op['target']}")
+    elif op["kind"] == "setting":
+        scope = "new and existing entries" if proposal["apply_to"] == "all" else "new entries"
+        lines.append(f"     {proposal['setting']}: {proposal['old']}  ->  {proposal['new']}  ({scope})")
     for found in op["issues"]:
         lines.append(f"     [{found['severity']}] {found['text']}")
     return "\n".join(lines)
+
+
+def confirm_scope(store, op, input_fn):
+    """Ask whether a format change is for new entries only or also existing ones."""
+    proposal = dict(op["proposal"])
+    current = "f" if proposal["apply_to"] == "future" else "a"
+    while True:
+        answer = input_fn(f"   #{op['id']} {proposal['setting']} -> {proposal['new']}: "
+                          f"(f) new entries only / (a) also reformat existing entries "
+                          f"[Enter = {current}]? ").strip().lower() or current
+        if answer in ("f", "a"):
+            break
+    proposal["apply_to"] = "future" if answer == "f" else "all"
+    store.update_proposal(op["id"], proposal, op["issues"])
+    return {**op, "proposal": proposal}
+
+
+def apply_setting(setting, old, new, apply_to):
+    """Change a logbook setting; with apply_to="all", also reformat existing entries.
+    Returns (before, after)."""
+    logbook_docx.set_setting(setting, new)
+    reformatted = 0
+    if apply_to == "all":
+        wording = {old: new} if setting.endswith("_wording") else None
+        reformatted = logbook_docx.reformat_entries(replace_wording=wording)
+    return {"value": old}, {"value": new, "reformatted": reformatted}
 
 
 def merge_text(old, new):
@@ -89,6 +119,10 @@ def execute(op, choice):
     if op["kind"] == "month_tab":
         sheets.create_month_tab(proposal["year"], proposal["month"])
         return None, {"tab": op["target"]}
+
+    if op["kind"] == "setting":
+        return apply_setting(proposal["setting"], proposal["old"], proposal["new"],
+                             proposal["apply_to"])
 
     if op["kind"] == "week_table":
         added = logbook_docx.add_week_table()
@@ -252,6 +286,9 @@ def review(store, run_id, record, input_fn=input):
             store.update_operation(op["id"], REJECTED, error="blocked: cannot be approved")
             report(f"#{op['id']} skipped: it has a block issue")
             continue
+        if op["kind"] == "setting" and op["target"] != "signed_up_to_week":
+            # The scope says: always ask whether a format change also reformats old entries
+            op = confirm_scope(store, op, input_fn)
         # A refine of an existing entry is an intended overwrite: no need to ask again
         choice = "overwrite" if op["proposal"].get("overwrite") else "write"
         if choice == "write" and any(i["severity"] == "conflict" for i in op["issues"]):
@@ -284,6 +321,19 @@ def undo(store, op_id, record):
         return f"#{op_id} is '{op['status']}', not written, so there is nothing to undo."
     if op["kind"] in ("month_tab", "week_table"):
         return f"#{op_id} added structure ({op['target']}); remove it by hand if needed."
+    if op["kind"] == "setting":
+        p = op["proposal"]
+        if logbook_docx.get_setting(p["setting"]) != p["new"]:
+            return f"#{op_id} was changed again later, so it is not undone."
+        try:
+            apply_setting(p["setting"], p["new"], p["old"], p["apply_to"])
+        except Exception as error:
+            message = f"{type(error).__name__}: {error}"
+            record("undo_failed", {"operation": op_id, "error": message})
+            return f"Undo of #{op_id} FAILED, nothing confirmed: {message}"
+        store.update_operation(op_id, UNDONE)
+        record("undo", {"operation": op_id, "restored": p["old"]})
+        return f"#{op_id} undone: {p['setting']} is back to {p['old']}."
 
     # Safety: only undo if the document still holds exactly what we wrote
     now = current_value(op)

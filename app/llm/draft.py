@@ -179,6 +179,34 @@ def refine_text(fields, facts, instruction, llm=None):
     return new, str(reply.get("changes", ""))
 
 
+SUMMARY_PROMPT = """You summarize an intern's work-log entries.
+
+You get JSON {"scope": "...", "days": [{"date", "mode", "tasks", "challenges", "learnings", "next_steps"}]}.
+Write a short, clear summary (a few short paragraphs or bullet groups by project/theme).
+If the scope is a project, summarize only the work on that project and leave out
+other work done on the same days.
+
+Rules: use only what the entries say; never add results, tools, numbers or details.
+After each point, give the dates it comes from in brackets, e.g. (02/10, 05/10).
+
+Reply with the summary text only (plain text, no JSON).
+"""
+
+
+def summarize_days(scope, days, llm=None):
+    """Summarize work-log days (dicts with date and text fields) using only their content."""
+    llm = llm or OpenAICompatLLM.from_config()
+    # Plain text, not JSON: a long summary is easy to break when it has to be escaped
+    reply = llm.chat_tools([
+        {"role": "system", "content": SUMMARY_PROMPT},
+        {"role": "user", "content": json.dumps({"scope": scope, "days": days}, ensure_ascii=False)},
+    ], tools=None)
+    summary = (reply["content"] or "").strip()
+    if not summary:
+        raise ValueError("The summary came back empty")
+    return summary
+
+
 if __name__ == "__main__":
     # Usage: python -m app.llm.draft "rough notes about the day"
     draft = draft_entry(sys.argv[1])

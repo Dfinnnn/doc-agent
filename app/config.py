@@ -46,5 +46,12 @@ def _load_profile(name):
         return json.load(file)
 
 
+def save_profile(name, data):
+    """Write a profile back to its file (used when the user changes a setting by chat)."""
+    with open(PROJECT_ROOT / "profiles" / f"{name}.json", "w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+
+
 WORKSHEET = _load_profile("worksheet")
 LOGBOOK = _load_profile("logbook")

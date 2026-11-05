@@ -11,6 +11,7 @@
   "date_align": "center",
   "bullet": "•",
   "bullet_indent_pt": 12,
+  "signed_up_to_week": 0,
   "wording": {
     "leave": "On leave",
     "public_holiday": "Public holiday"
