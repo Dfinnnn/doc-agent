@@ -86,6 +86,13 @@ It shows the model's actual tool calls and outputs, not hidden reasoning.
 ## 8. Stack
 Python, FastAPI, plain HTML/CSS/JS, SQLite, python-docx, Google Sheets API, OpenAI SDK.
 
+## 8a. UI rules (Part 10)
+- Plain HTML/CSS/JS in `web/` (`index.html`, `app.js`, `style.css`). No framework, CDN, Tailwind, GSAP or web fonts; system fonts only.
+- Backend: FastAPI in `app/api/main.py`, run with uvicorn. Any other new library needs asking first. `requirements.txt` stays up to date.
+- Panels: **chat**, **preview/diff** (Approve / Reject / Refine, plus the overwrite / append / skip and "new only / reformat existing" choices), **activity log** (read from the SQLite store), and **Undo** for written changes.
+- The UI never writes directly. Every write goes through the same preview + approval code the terminal uses, so block issues still can't be approved.
+- Basics: readable contrast, every control usable by keyboard, visible focus, works at laptop width.
+
 ## 9. Run and deploy
 - V1 runs locally; the code goes on GitHub.
 - A showcase deploy comes later, using demo data (a sample Sheet and a downloadable .docx). Frontend on Vercel/Netlify; backend on Render, Railway or Fly (not Vercel serverless: no lasting files or SQLite).

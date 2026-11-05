@@ -123,12 +123,67 @@ def tell_agent(messages, lines):
                          "answering about their current content."})
 
 
+class Session:
+    """What one chat keeps between messages: the model, the store, the tools and
+    the conversation so far. The terminal and the web page each hold one."""
+
+    def __init__(self):
+        self.llm = OpenAICompatLLM.from_config()
+        self.store = Store()
+        self.tools = tool_schemas()
+        self.messages = [{"role": "system",
+                          "content": SYSTEM_PROMPT.format(today=f"{date.today():%A %d/%m/%Y}")}]
+
+    def recorder(self, run_id):
+        """A record(kind, data) function that saves events to this run's activity log."""
+        return lambda kind, data: self.store.log(run_id, kind, data)
+
+
+def handle_message(session, text):
+    """Handle one message from the user. Nothing is written here: write tools only
+    save proposals in the store, and approval happens afterwards (review / decide).
+
+    Returns {"run_id", "kind", "text"}; kind is "log", "undo", "answer" or "error".
+    """
+    text = text.strip()
+    if not text:
+        raise ValueError("empty message")
+    store = session.store
+
+    # Commands handled by code, without the LLM
+    words = text.lower().split()
+    if words[0] == "log" and len(words) <= 2:
+        run = int(words[1]) if len(words) == 2 and words[1].isdigit() else store.last_run_id()
+        return {"run_id": run, "kind": "log",
+                "text": f"Activity log of run {run}:\n{format_events(store.events(run))}"}
+
+    run_id = store.start_run(text, config.LLM_PROVIDER, config.LLM_MODEL)
+    record = session.recorder(run_id)
+    to_undo = undo_targets(text, store)
+    if to_undo is not None:
+        if not to_undo:
+            results = ["There are no written changes to undo."]
+        else:
+            # Newest first, so changes to the same cell unwind in the right order
+            results = [undo(store, op_id, record) for op_id in sorted(to_undo, reverse=True)]
+        tell_agent(session.messages, results)
+        return {"run_id": run_id, "kind": "undo", "text": "\n".join(results)}
+
+    set_context(store, run_id)  # write tools save their proposals to this run
+    record("user_message", {"text": text})
+    session.messages.append({"role": "user", "content": text})
+    try:
+        answer = ask(session.llm, session.messages, session.tools, record)
+    except Exception as error:  # report plainly, keep the chat going
+        message = f"{type(error).__name__}: {error}"
+        record("error", {"error": message})
+        return {"run_id": run_id, "kind": "error", "text": f"Error: {message}"}
+    record("answer", {"text": answer})
+    return {"run_id": run_id, "kind": "answer", "text": answer}
+
+
 def main():
-    llm = OpenAICompatLLM.from_config()
-    store = Store()
-    tools = tool_schemas()
-    messages = [{"role": "system",
-                 "content": SYSTEM_PROMPT.format(today=f"{date.today():%A %d/%m/%Y}")}]
+    session = Session()
     print(f"Agent ready ({config.LLM_PROVIDER} / {config.LLM_MODEL}).")
     print("Commands: 'log' (last run's activity), 'log 5', 'undo' (last approved changes), "
           "'undo 3' or 'undo 3,5', 'exit'.")
@@ -138,38 +193,14 @@ def main():
             break
         if not text:
             continue
-
-        # Commands handled by code, without the LLM
-        words = text.lower().split()
-        if words[0] == "log" and len(words) <= 2:
-            run = int(words[1]) if len(words) == 2 and words[1].isdigit() else store.last_run_id()
-            print(f"\nActivity log of run {run}:\n{format_events(store.events(run))}")
+        reply = handle_message(session, text)
+        prefix = "agent> " if reply["kind"] in ("answer", "error") else ""
+        print(f"\n{prefix}{reply['text']}")
+        if reply["kind"] != "answer":
             continue
-
-        run_id = store.start_run(text, config.LLM_PROVIDER, config.LLM_MODEL)
-        to_undo = undo_targets(text, store)
-        if to_undo is not None:
-            if not to_undo:
-                results = ["There are no written changes to undo."]
-            else:
-                # Newest first, so changes to the same cell unwind in the right order
-                results = [undo(store, op_id, lambda kind, data: store.log(run_id, kind, data))
-                           for op_id in sorted(to_undo, reverse=True)]
-            print("\n" + "\n".join(results))
-            tell_agent(messages, results)
-            continue
-        set_context(store, run_id)  # write tools save their proposals to this run
-
-        def record(kind, data):
-            store.log(run_id, kind, data)
-
-        record("user_message", {"text": text})
-        messages.append({"role": "user", "content": text})
-        try:
-            answer = ask(llm, messages, tools, record)
-            record("answer", {"text": answer})
-            print(f"\nagent> {answer}")
-            tell_agent(messages, review(store, run_id, record))  # the user approves; the code writes
+        record = session.recorder(reply["run_id"])
+        try:  # the user approves; the code writes
+            tell_agent(session.messages, review(session.store, reply["run_id"], record))
         except Exception as error:  # report plainly, keep the chat going
             record("error", {"error": f"{type(error).__name__}: {error}"})
             print(f"\nagent> Error: {type(error).__name__}: {error}")

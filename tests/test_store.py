@@ -42,5 +42,18 @@ def test_operations_can_be_filtered_by_status(store):
     assert len(store.operations(run)) == 2
 
 
+def test_recent_runs_newest_first_with_status_counts(store):
+    old = store.start_run("first", "gemini", "m")
+    new = store.start_run("second", "gemini", "m")
+    store.add_operation(new, "sheet_row", "02/11/2026", {}, [])
+    written = store.add_operation(new, "sheet_row", "03/11/2026", {}, [])
+    store.update_operation(written, WRITTEN)
+    runs = store.recent_runs()
+    assert [r["id"] for r in runs] == [new, old]
+    assert runs[0]["statuses"] == {"proposed": 1, "written": 1}
+    assert runs[1]["statuses"] == {}
+    assert len(store.recent_runs(limit=1)) == 1
+
+
 def test_missing_operation_returns_none(store):
     assert store.operation(999) is None

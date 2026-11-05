@@ -81,17 +81,22 @@ def describe(op):
     return "\n".join(lines)
 
 
-def confirm_scope(store, op, input_fn):
-    """Ask whether a format change is for new entries only or also existing ones."""
-    proposal = dict(op["proposal"])
+def ask_scope(op, input_fn):
+    """Ask whether a format change is for new entries only or also existing ones.
+    Returns "future" or "all"."""
+    proposal = op["proposal"]
     current = "f" if proposal["apply_to"] == "future" else "a"
     while True:
         answer = input_fn(f"   #{op['id']} {proposal['setting']} -> {proposal['new']}: "
                           f"(f) new entries only / (a) also reformat existing entries "
                           f"[Enter = {current}]? ").strip().lower() or current
         if answer in ("f", "a"):
-            break
-    proposal["apply_to"] = "future" if answer == "f" else "all"
+            return "future" if answer == "f" else "all"
+
+
+def set_scope(store, op, apply_to):
+    """Save the user's scope answer ("future" or "all") on a format change."""
+    proposal = {**op["proposal"], "apply_to": apply_to}
     store.update_proposal(op["id"], proposal, op["issues"])
     return {**op, "proposal": proposal}
 
@@ -236,18 +241,137 @@ def refine_op(store, op, instruction):
     return f"#{op['id']} refined: {changes or 'rewritten as asked'}"
 
 
-def review(store, run_id, record, input_fn=input):
-    """Show this run's proposed operations, ask the user, write what they approve.
-    Returns one line per operation saying what happened (empty if none)."""
-    ops = store.operations(run_id, PROPOSED)
+def pending_ops(store, run_id):
+    """This run's proposed operations, in the order they would be written."""
+    return sorted(store.operations(run_id, PROPOSED), key=lambda o: (ORDER[o["kind"]], o["id"]))
+
+
+def needs_choice(op):
+    """The extra question an approved operation needs before it is written:
+    "scope" (format change: new entries only, or also existing ones),
+    "conflict" (the date already has content: overwrite / append / skip), or None."""
+    if any(i["severity"] == "block" for i in op["issues"]):
+        return None  # it will not be written anyway
+    if op["kind"] == "setting" and op["target"] != "signed_up_to_week":
+        return "scope"  # the scope says: always ask this for a format change
+    # A refine of an existing entry is an intended overwrite: no need to ask again
+    if not op["proposal"].get("overwrite") and any(i["severity"] == "conflict"
+                                                   for i in op["issues"]):
+        return "conflict"
+    return None
+
+
+CHOICES = {"scope": ("future", "all"), "conflict": ("overwrite", "append", "skip")}
+
+
+def decide(store, run_id, chosen, choices, record, answer=None):
+    """Write the approved operations of a run and reject the rest.
+
+    chosen:  the ids to write.
+    choices: {id: answer} for each approved operation that needs_choice():
+             "future" / "all" for a format change (missing = keep what was proposed),
+             "overwrite" / "append" / "skip" for a conflict (required).
+    Everything is checked before anything is written, so a bad request writes nothing.
+    Returns one line per operation saying what happened (empty if none were waiting).
+    """
+    ops = pending_ops(store, run_id)
     if not ops:
         return []
-    results = []
+    ids = {op["id"] for op in ops}
+    chosen = {int(i) for i in chosen}
+    choices = {int(k): v for k, v in (choices or {}).items()}  # JSON keys arrive as text
+    if not chosen <= ids:
+        raise ValueError(f"not in this preview: {sorted(chosen - ids)}; waiting: {sorted(ids)}")
+    for op in ops:
+        question = needs_choice(op) if op["id"] in chosen else None
+        given = choices.get(op["id"])
+        if question == "conflict" and given is None:
+            raise ValueError(f"#{op['id']} already has content: choose overwrite, append or skip")
+        if question and given is not None and given not in CHOICES[question]:
+            raise ValueError(f"#{op['id']}: '{given}' is not one of {', '.join(CHOICES[question])}")
+    record("decision", {"answer": answer, "approved": sorted(chosen), "choices": choices})
 
-    def report(line):
-        print(f"   {line}")
-        results.append(line)
-    ops.sort(key=lambda op: (ORDER[op["kind"]], op["id"]))
+    results = []
+    for op in ops:
+        if op["id"] not in chosen:
+            store.update_operation(op["id"], REJECTED)
+            results.append(f"#{op['id']} rejected, not written")
+            continue
+        if any(i["severity"] == "block" for i in op["issues"]):
+            store.update_operation(op["id"], REJECTED, error="blocked: cannot be approved")
+            results.append(f"#{op['id']} skipped: it has a block issue")
+            continue
+        question = needs_choice(op)
+        if question == "scope":
+            op = set_scope(store, op, choices.get(op["id"], op["proposal"]["apply_to"]))
+        choice = "overwrite" if op["proposal"].get("overwrite") else "write"
+        if question == "conflict":
+            choice = choices[op["id"]]
+            if choice == "skip":
+                store.update_operation(op["id"], REJECTED, error="skipped by user")
+                results.append(f"#{op['id']} skipped by you, not written")
+                continue
+        store.update_operation(op["id"], APPROVED)
+        try:
+            before, after = execute(op, choice)
+        except Exception as error:
+            message = f"{type(error).__name__}: {error}"
+            store.update_operation(op["id"], FAILED, error=message)
+            record("write_failed", {"operation": op["id"], "error": message})
+            results.append(f"#{op['id']} FAILED, nothing confirmed: {message}")
+            continue
+        store.update_operation(op["id"], WRITTEN, before=before, after=after)
+        record("write", {"operation": op["id"], "choice": choice, "before": before, "after": after})
+        results.append(f"#{op['id']} {op['kind']} {op['target']} written ({choice})")
+    return results
+
+
+def refine_ops(store, run_id, ids, instruction, record, show=None):
+    """Rewrite waiting drafts of a run following the user's instruction. Nothing is written.
+
+    Returns one item per draft: {"id", "message", "before", "now", "issues"}
+    (before / now are the draft text). show(item), if given, is called as each
+    draft is done, so a long "r all" shows progress.
+    """
+    waiting = {op["id"]: op for op in pending_ops(store, run_id)}
+    ids = [int(i) for i in ids]
+    if not ids or not set(ids) <= set(waiting):
+        raise ValueError(f"not in this preview: {sorted(set(ids) - set(waiting)) or 'none given'}; "
+                         f"waiting: {sorted(waiting)}")
+    items = []
+    for op_id in ids:
+        op = waiting[op_id]
+        try:
+            message = refine_op(store, op, instruction)
+        except Exception as error:
+            message = f"#{op_id} could not be refined: {type(error).__name__}: {error}"
+        record("refine", {"operation": op_id, "instruction": instruction, "result": message})
+        new_op = store.operation(op_id)
+        item = {"id": op_id, "message": message, "before": draft_text(op),
+                "now": draft_text(new_op), "issues": new_op["issues"]}
+        items.append(item)
+        if show:
+            show(item)
+    return items
+
+
+def print_refined(item):
+    """Terminal view of one refined draft: old vs new, then its issues."""
+    print(f"\n   {item['message']}")
+    if item["before"]:
+        print(f"     draft before:  {indent(item['before'], 20)}")
+        print(f"     draft now:     {indent(item['now'], 20)}")
+    for found in item["issues"]:
+        print(f"     [{found['severity']}] {found['text']}")
+
+
+def review(store, run_id, record, input_fn=input):
+    """Terminal approval: show this run's proposed operations, ask the user,
+    then let decide() write what they approve.
+    Returns one line per operation saying what happened (empty if none)."""
+    ops = pending_ops(store, run_id)
+    if not ops:
+        return []
     print("\nProposed changes (nothing is written yet):")
     for op in ops:
         print(describe(op))
@@ -258,57 +382,20 @@ def review(store, run_id, record, input_fn=input):
         if chosen is not None:
             break
         targets, instruction = answer  # refine drafts, show old vs new, then ask again
-        for op_id in targets:
-            op = next(o for o in ops if o["id"] == op_id)
-            old_text = draft_text(op)
-            try:
-                message = refine_op(store, op, instruction)
-            except Exception as error:
-                message = f"#{op_id} could not be refined: {type(error).__name__}: {error}"
-            record("refine", {"operation": op_id, "instruction": instruction, "result": message})
-            ops = sorted(store.operations(run_id, PROPOSED),
-                         key=lambda o: (ORDER[o["kind"]], o["id"]))
-            new_op = next(o for o in ops if o["id"] == op_id)
-            print(f"\n   {message}")
-            if old_text:
-                print(f"     draft before:  {indent(old_text, 20)}")
-                print(f"     draft now:     {indent(draft_text(new_op), 20)}")
-            for found in new_op["issues"]:
-                print(f"     [{found['severity']}] {found['text']}")
-    record("decision", {"answer": answer, "approved": sorted(chosen)})
+        refine_ops(store, run_id, targets, instruction, record, show=print_refined)
+        ops = pending_ops(store, run_id)
 
+    # Ask the extra questions first, then decide() checks everything and writes
+    choices = {}
     for op in ops:
-        if op["id"] not in chosen:
-            store.update_operation(op["id"], REJECTED)
-            report(f"#{op['id']} rejected, not written")
-            continue
-        if any(i["severity"] == "block" for i in op["issues"]):
-            store.update_operation(op["id"], REJECTED, error="blocked: cannot be approved")
-            report(f"#{op['id']} skipped: it has a block issue")
-            continue
-        if op["kind"] == "setting" and op["target"] != "signed_up_to_week":
-            # The scope says: always ask whether a format change also reformats old entries
-            op = confirm_scope(store, op, input_fn)
-        # A refine of an existing entry is an intended overwrite: no need to ask again
-        choice = "overwrite" if op["proposal"].get("overwrite") else "write"
-        if choice == "write" and any(i["severity"] == "conflict" for i in op["issues"]):
-            choice = ask_choice(op, input_fn)
-            if choice == "skip":
-                store.update_operation(op["id"], REJECTED, error="skipped by user")
-                report(f"#{op['id']} skipped by you, not written")
-                continue
-        store.update_operation(op["id"], APPROVED)
-        try:
-            before, after = execute(op, choice)
-        except Exception as error:
-            message = f"{type(error).__name__}: {error}"
-            store.update_operation(op["id"], FAILED, error=message)
-            record("write_failed", {"operation": op["id"], "error": message})
-            report(f"#{op['id']} FAILED, nothing confirmed: {message}")
-            continue
-        store.update_operation(op["id"], WRITTEN, before=before, after=after)
-        record("write", {"operation": op["id"], "choice": choice, "before": before, "after": after})
-        report(f"#{op['id']} {op['kind']} {op['target']} written ({choice})")
+        question = needs_choice(op) if op["id"] in chosen else None
+        if question == "scope":
+            choices[op["id"]] = ask_scope(op, input_fn)
+        elif question == "conflict":
+            choices[op["id"]] = ask_choice(op, input_fn)
+    results = decide(store, run_id, chosen, choices, record, answer)
+    for line in results:
+        print(f"   {line}")
     return results
 
 

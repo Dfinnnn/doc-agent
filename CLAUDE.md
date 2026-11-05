@@ -29,5 +29,14 @@ Read before working: `docs/idea.md` (purpose), `docs/scope-v1.md` (what V1 does 
 ## Stack
 Python, FastAPI (Part 10), plain HTML/CSS/JS, SQLite, python-docx, Google Sheets API (service account), OpenAI SDK as the LLM adapter (OpenAI-compatible providers via `.env`).
 
+## Skills
+The "Ui ux pro max" plugin (v2.13.0) is installed. It was reviewed in an earlier session.
+- **Allowed:** `ui-ux-pro-max:ui-ux-pro-max`, only its search (`search.py` with `--domain` / `--design-system`). It is stdlib Python, uses local data and needs no network.
+  - Results are suggestions; this project's rules always win.
+  - No `--persist` without asking first. Never `--force`.
+  - Its stacks don't include plain HTML; never use the `html-tailwind` stack advice for code.
+- **Not allowed (don't load or run):** `ui-styling` (shadcn/Tailwind, runs npx), `design` (calls outside APIs, needs keys and pip installs), `design-system`, `slides`, `banner-design`, `brand`.
+- Never click or run a plugin update.
+
 ## When decisions change
 Update `docs/scope-v1.md` (and `docs/plan-v1.md` if the order changes) before changing code.

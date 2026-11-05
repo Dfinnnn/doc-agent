@@ -40,7 +40,7 @@ doc-agent/
 | 7 | **Tools + agent loop (terminal)**: tool schemas; the LLM picks tools; read tools run directly; write tools only *propose* a change | Tool calling, the agent loop | In the terminal, "what did I do on 2/10?" is answered by the agent calling `read_sheet` |
 | 8 | **Approval + store**: SQLite records runs, events and operations; approve → execute → save before/after; undo | Persistence, approval gate, audit trail | A proposed write is shown, you approve it, it is written, the activity log shows every step, and undo restores the old value |
 | 9 | **Commands end to end (terminal)**: log update, sync, refine (draft / existing), summarize, Q&A, settings change | Putting it together | Each command from scope §3 works on the copies |
-| 10 | **Web UI**: FastAPI endpoints + a plain HTML/JS page with chat, preview/diff, approve buttons and an activity panel | HTTP, REST, frontend ↔ backend | The same commands work from the browser |
+| 10 | **Web UI**: first split the terminal-only approval and loop code into functions the web can call (`decide()`, `handle_message()`), so the terminal and the web share the same rules; then FastAPI endpoints + a plain HTML/JS page with chat, preview/diff, approve buttons and an activity panel | HTTP, REST, frontend ↔ backend | The same commands work from the browser |
 | 11 | **Hardening and release prep**: error handling, README, "tested with" models, demo data, secret scan before going public | Shipping | A fresh clone runs with demo data; nothing private in the git history |
 
 ## Rules throughout

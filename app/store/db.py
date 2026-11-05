@@ -55,7 +55,9 @@ def to_dict(row):
 class Store:
     def __init__(self, path=DB_PATH):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(path)
+        # The web server may answer requests on different threads; that is safe here
+        # because app/api/main.py lets only one request use the store at a time (its lock).
+        self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row  # rows behave like dicts
         self.conn.executescript(SCHEMA)
 
@@ -92,6 +94,17 @@ class Store:
     def last_run_id(self):
         row = self.conn.execute("SELECT MAX(id) FROM runs").fetchone()
         return row[0]
+
+    def recent_runs(self, limit=20):
+        """The newest runs first, each with how many of its changes are in each status,
+        e.g. {"id": 5, "message": "sync", "statuses": {"written": 3, "rejected": 1}}."""
+        runs = [dict(row) for row in self.conn.execute(
+            "SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))]
+        for run in runs:
+            run["statuses"] = dict(self.conn.execute(
+                "SELECT status, COUNT(*) FROM operations WHERE run_id = ? GROUP BY status",
+                (run["id"],)).fetchall())
+        return runs
 
     # ---- operations ----
 
