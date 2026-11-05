@@ -303,7 +303,7 @@ def sync(date_from=None, date_to=None):
     end = min(parse_date(date_to), today) if date_to else today
     logbook = {r["date"]: r for r in logbook_docx.read_logbook()}
 
-    to_rewrite, plain, skipped = [], [], []
+    to_rewrite, plain, skipped, not_synced = [], [], [], []
     for year, month in months_between(start, end):
         try:
             records = sheets.read_month(year, month)
@@ -315,12 +315,15 @@ def sync(date_from=None, date_to=None):
             if not (max(start, FIRST_DAY) <= day <= end):
                 continue
             if logbook.get(day, {}).get("activities"):
-                continue  # already in the logbook
+                not_synced.append(f"{day:{DATE_FORMAT}}: already in the logbook")
+                continue
             wording = LEAVE_WORDING.get(r["mode"]) if day.weekday() < 5 else None
             if wording:
                 plain.append((day, wording))
             elif r["tasks"]:
                 to_rewrite.append({"date": f"{day:{DATE_FORMAT}}", "tasks": r["tasks"]})
+            elif day.weekday() < 5:
+                not_synced.append(f"{day:{DATE_FORMAT}}: no tasks in the work log yet")
 
     rewritten = {}
     for i in range(0, len(to_rewrite), SYNC_BATCH):
@@ -353,13 +356,26 @@ def sync(date_from=None, date_to=None):
         proposed.append(save_proposal("logbook_entry", item["date"],
                                       {"date": item["date"], "activities": activities,
                                        "source": item["tasks"]}, issues))
-    return {"proposed": "sync", "logbook_entries": len(proposed),
-            "skipped": skipped, "status": NOT_WRITTEN}
+    return {"proposed": "sync", "logbook_entries": len(proposed), "skipped": skipped,
+            "not_synced": not_synced, "status": NOT_WRITTEN if proposed else "nothing to sync"}
 
 
-def refine_entry(document, day, instruction):
-    """Rewrite an existing entry following the user's instruction (old value kept for undo)."""
-    target = parse_date(day)
+def refine_entry(document, day, instruction, day_to=None):
+    """Rewrite existing entries for a date or a range, following the user's instruction
+    (old values kept for undo)."""
+    if day_to:
+        start, end = parse_range(day, day_to)
+        results = [refine_one_entry(document, start + timedelta(days=i), instruction)
+                   for i in range((end - start).days + 1)]
+        done = [r for r in results if "operation" in r]
+        return {"proposed": "refine", "operations": [r["operation"] for r in done],
+                "not_refined": [r["error"] for r in results if "error" in r],
+                "status": NOT_WRITTEN if done else "nothing to refine"}
+    return refine_one_entry(document, parse_date(day), instruction)
+
+
+def refine_one_entry(document, target, instruction):
+    day = f"{target:{DATE_FORMAT}}"
     if document == "sheet":
         records = {r["date"]: r for r in sheets.read_month(target.year, target.month)}
         record = records.get(target, {})
@@ -394,12 +410,14 @@ TIME_PARAM = {"type": "string", "description": "Time as HH:MM (24h)"}
 TOOLS = {
     "refine_entry": {
         "function": refine_entry,
-        "description": "Rewrite an EXISTING entry in the work log ('sheet') or the logbook "
-                       "('logbook') for one date, following the user's instruction (e.g. "
+        "description": "Rewrite EXISTING entries in the work log ('sheet') or the logbook "
+                       "('logbook') for one date or a date range, following the user's instruction (e.g. "
                        "'more detailed', 'shorter', 'mention the CIMB samples'). The app shows "
                        "old vs new for approval; the old text is kept for undo.",
         "parameters": {"document": {"type": "string", "enum": ["sheet", "logbook"]},
                        "day": DATE_PARAM,
+                       "day_to": {**DATE_PARAM, "description": "End date, to refine every "
+                                  "entry in a range (optional)"},
                        "instruction": {"type": "string", "description": "What to change"}},
         "required": ["document", "day", "instruction"],
     },

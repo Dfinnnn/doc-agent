@@ -39,6 +39,8 @@ Rules:
 - If the user asks how something would be written, show the text; do not call
   write tools. Call write tools only when the user asks to log or write.
 - Write tools only propose changes. Never say that something was saved or written.
+- If a tool proposes nothing (0 changes), say so plainly and give the reasons from
+  the result. Do not say that proposals are shown.
 - Undo is done by the app: the user types "undo" (the last approved changes) or
   "undo 3" / "undo 3,5" (those change numbers). If asked to undo, tell them this.
 - Read only what the question needs. Do not search other dates for examples.
@@ -103,7 +105,8 @@ def undo_targets(text, store):
     text = text.strip().lower()
     if re.fullmatch(r"undo(\s+(for\s+)?(all|last|everything))?", text):
         run = store.last_written_run()
-        return [op["id"] for op in store.operations(run, WRITTEN)] if run else []
+        return [op["id"] for op in store.operations(run, WRITTEN)
+                if op["kind"] in ("sheet_row", "logbook_entry")] if run else []
     if re.fullmatch(r"undo\s+#?\d+([\s,]+#?\d+)*", text):
         return [int(n) for n in re.findall(r"\d+", text)]
     return None

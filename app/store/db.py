@@ -82,9 +82,11 @@ class Store:
         return [to_dict(row) for row in rows]
 
     def last_written_run(self):
-        """The most recent run that has written changes (None if there is none)."""
+        """The most recent run with written changes that undo can restore: Sheet rows and
+        logbook entries, not new tabs or week tables (None if there is none)."""
         row = self.conn.execute(
-            "SELECT MAX(run_id) FROM operations WHERE status = ?", (WRITTEN,)).fetchone()
+            "SELECT MAX(run_id) FROM operations WHERE status = ? "
+            "AND kind IN ('sheet_row', 'logbook_entry')", (WRITTEN,)).fetchone()
         return row[0]
 
     def last_run_id(self):
