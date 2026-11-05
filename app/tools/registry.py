@@ -119,10 +119,23 @@ def issue(text, severity):
     return {"text": text, "severity": severity}
 
 
+SHEET_VALUE_FIELDS = ["clock_in", "clock_out", "break_time", "mode"] + SHEET_TEXT_FIELDS
+
+
+def empty_change_issues(kind, proposal):
+    """A change that would write nothing (or only a date) can never be approved."""
+    if kind == "logbook_entry" and not any(str(a).strip() for a in proposal.get("activities", [])):
+        return [issue("no activities to write", BLOCK)]
+    if kind == "sheet_row" and not any(proposal.get(f) for f in SHEET_VALUE_FIELDS):
+        return [issue("nothing to write: no tasks, Mode or times", BLOCK)]
+    return []
+
+
 def save_proposal(kind, target, proposal, issues):
     """Save one proposed change as an operation; returns its id (None if no store)."""
     if CONTEXT["store"] is None:
         return None
+    issues = issues + empty_change_issues(kind, proposal)
     if kind == "logbook_entry" and logbook_docx.signed_week(parse_date(target)):
         issues = issues + [issue("this week is signed: the .docx will no longer match the "
                                  "signed PDF", WARN)]
@@ -231,8 +244,17 @@ def log_update(notes):
     logbook = {r["date"]: r for r in logbook_docx.read_logbook()}
     months = {}
     summary = []
+    skipped = []
     for draft in drafts:
         day = parse_date(draft["date"])
+        leave = LEAVE_WORDING.get(draft["mode"]) if day.weekday() < 5 else None
+        has_text = draft["activities"] or any(draft[f] for f in SHEET_TEXT_FIELDS)
+        has_values = any(draft[f] for f in ("mode", "clock_in", "clock_out", "break_time"))
+        if not has_text and not has_values:
+            # Code decides, not the LLM: no tasks, Mode or times means nothing to propose
+            skipped.append({"date": draft["date"], "reason": "the notes give no tasks, Mode "
+                            "or times for this date, so nothing was proposed"})
+            continue
         found = check_draft_against_notes(draft["source_notes"] or notes, draft)
         drafted = [issue(f["what"], WARN) for f in found]
         if day > today:
@@ -277,23 +299,32 @@ def log_update(notes):
         sheet_op = save_proposal("sheet_row", draft["date"], row, sheet_issues)
 
         # --- Logbook entry (plus any missing week tables) ---
+        if draft["activities"]:
+            entry = {"date": draft["date"], "activities": draft["activities"], "source": source}
+        elif leave:  # a leave / holiday day: the profile's plain wording, as sync writes it
+            entry = {"date": draft["date"], "activities": [leave], "bullets": False, "source": source}
+        else:
+            entry = None  # e.g. only times or Mode WFO given: nothing to say in the logbook
         log_issues = list(drafted)
-        week = (day - logbook_docx.WEEK1_MONDAY).days // 7 + 1
-        week_ops = propose_week_tables(week)
-        if day.weekday() >= 5:
-            log_issues.append(issue("weekend work: an extra row will be added to this "
-                                    "week's table", WARN))
-        if logbook.get(day, {}).get("activities"):
-            log_issues.append(issue("this day already has an entry", CONFLICT))
-        log_op = save_proposal("logbook_entry", draft["date"],
-                               {"date": draft["date"], "activities": draft["activities"],
-                                "source": source}, log_issues)
+        week_ops, log_op = [], None
+        if entry:
+            week = (day - logbook_docx.WEEK1_MONDAY).days // 7 + 1
+            week_ops = propose_week_tables(week)
+            if day.weekday() >= 5:
+                log_issues.append(issue("weekend work: an extra row will be added to this "
+                                        "week's table", WARN))
+            if logbook.get(day, {}).get("activities"):
+                log_issues.append(issue("this day already has an entry", CONFLICT))
+            log_op = save_proposal("logbook_entry", draft["date"], entry, log_issues)
 
         summary.append({"date": draft["date"], "sheet_operation": sheet_op,
                         "logbook_operation": log_op, "week_table_operations": week_ops,
                         "missing": draft["missing"],
                         "issues": [i["text"] for i in sheet_issues + log_issues]})
-    return {"proposed": "log_update", "days": summary, "status": NOT_WRITTEN}
+    result = {"proposed": "log_update", "days": summary, "status": NOT_WRITTEN}
+    if skipped:
+        result["not_proposed"] = skipped
+    return result
 
 
 SYNC_BATCH = 8  # days per LLM call when rewriting for the logbook

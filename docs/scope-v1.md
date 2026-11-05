@@ -43,7 +43,8 @@ One LLM in a tool-calling loop. No LangGraph in V1.
 - **Supervisor rows are never written:** the agent never writes into a week's "Verified by / Official Stamps / Comment" row.
 - **Signed weeks warn, not block:** signing happens on an exported PDF, not on the .docx. After the user marks Week 12 / Week 24 as signed (a profile flag), editing Weeks 1–12 / 13–24 shows a warning that the .docx will no longer match the signed PDF.
 - **Format changes by chat:** the user can change whitelisted profile settings in an order (font, size, date alignment, leave / public-holiday wording, last signed week), e.g. "from now on use Arial 12". The app asks whether the change applies to future entries only or also reformats existing ones, then shows it as an approval-gated change. Structure (columns, tables) cannot be changed this way. A different file with its own format = a new profile (created by hand in V1; drafting a profile by chat is a V2 candidate).
-- **Non-working days:** sync reads the Sheet's Mode column (Weekend / Leave / Public Holidays / Medical Leave). For new entries, the user states it in the order.
+- **Non-working days:** sync reads the Sheet's Mode column (Weekend / Leave / Public Holidays / Medical Leave). For new entries, the user states it in the order; a log update for a leave or holiday day gets the profile's plain wording in the logbook.
+- **Nothing to log, nothing proposed:** a log update for a date whose notes give no tasks, Mode or times proposes nothing and says so. An empty change (a logbook entry with no activities, a Sheet row with no values) is a block issue and can't be approved. Code checks this, not the LLM.
 - **Truthfulness:** no invented activities, causes, results or learnings. Rewording is allowed; new facts are not.
 - **Errors:** report failures plainly; never claim a write succeeded unless it was confirmed.
 
