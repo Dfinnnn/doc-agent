@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Document assistant</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Document assistant</h1>
+    <span class="muted"><span id="model">…</span> · <span id="status">connecting</span></span>
+  </header>
+
+  <main class="layout">
+    <section class="chat" aria-label="Chat">
+      <div id="empty" class="empty">
+        <div class="mark big" aria-hidden="true">DA</div>
+        <p class="empty-title">What should I log or check?</p>
+        <div class="chips">
+          <button type="button" class="chip" data-text="log update today: ">Log update for today</button>
+          <button type="button" class="chip" data-text="sync the Sheet to the logbook">Sync Sheet to logbook</button>
+          <button type="button" class="chip" data-text="audit both documents">Audit both documents</button>
+          <button type="button" class="chip" data-text="summarize this month">Summarize this month</button>
+        </div>
+      </div>
+      <ol id="messages" class="messages" aria-live="polite"></ol>
+      <form id="chat-form" class="composer">
+        <label for="chat-input" class="sr-only">Your order</label>
+        <textarea id="chat-input" rows="1" placeholder="Type an order"></textarea>
+        <button type="submit" id="send" class="send" aria-label="Send">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </form>
+    </section>
+
+    <section class="side">
+      <div class="tabs" role="tablist">
+        <button role="tab" id="tab-preview" aria-controls="panel-preview" aria-selected="true">Preview</button>
+        <button role="tab" id="tab-activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1">Activity</button>
+      </div>
+      <div id="panel-preview" role="tabpanel" aria-labelledby="tab-preview" class="panel"></div>
+      <div id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" class="panel" hidden></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

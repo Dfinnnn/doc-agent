@@ -6,16 +6,24 @@ it never writes to the documents by itself.
 Run with: python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8000
 """
 
+import logging
 import threading
 
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import config
-from app.agent.approval import decide, describe, pending_ops, refine_ops
+from app.agent.approval import decide, needs_choice, pending_ops, preview_data, refine_ops
 from app.agent.loop import Session, handle_message, tell_agent
+from app.store.db import Store
 
 app = FastAPI(title="Document Assistant Agent")
+
+# The page asks /api/progress every second while the agent works; keep those
+# requests out of the server's terminal log so the real ones stay readable.
+logging.getLogger("uvicorn.access").addFilter(
+    lambda record: "/api/progress" not in record.getMessage())
 
 # One chat for the one local user, made on the first message (like the terminal's).
 state = {"session": None, "waiting_run": None}
@@ -31,10 +39,12 @@ def get_session():
 
 
 def proposals(store, run_id):
-    """The changes of a run that wait for approval, with the same preview text
-    the terminal shows. Nothing is written."""
+    """The changes of a run that wait for approval: what each would change (the same
+    data the terminal preview prints), its issues, and which extra choice it needs
+    ("conflict", "scope" or None). Nothing is written."""
     return [{"id": op["id"], "kind": op["kind"], "target": op["target"],
-             "issues": op["issues"], "preview": describe(op)}
+             "issues": op["issues"], "needs": needs_choice(op),
+             "apply_to": op["proposal"].get("apply_to"), **preview_data(op)}
             for op in pending_ops(store, run_id)]
 
 
@@ -155,6 +165,23 @@ def undo_changes(request: UndoRequest):
         return {"run_id": reply["run_id"], "results": reply["text"].splitlines()}
 
 
+progress_store = None  # its own connection, used only for reading
+
+
+@app.get("/api/progress")
+def progress():
+    """What the newest run has done so far, for the live steps while the agent works.
+    Read-only and outside the lock, so it answers while a chat request is running."""
+    global progress_store
+    if progress_store is None:
+        progress_store = Store()
+    run_id = progress_store.last_run_id()
+    events = progress_store.events(run_id) if run_id else []
+    steps = [{"at": e["at"], "kind": e["kind"], "name": e["data"].get("name")}
+             for e in events if e["kind"] in ("tool_call", "tool_result", "llm_call", "error")]
+    return {"run_id": run_id, "steps": steps}
+
+
 @app.get("/api/runs")
 def runs(limit: int = 20):
     """The newest runs for the activity panel, with how many changes are in each status."""
@@ -171,3 +198,8 @@ def run_events(run_id: int):
         return {"run_id": run_id, "events": store.events(run_id),
                 "operations": [{k: op[k] for k in ("id", "kind", "target", "status", "error")}
                                for op in store.operations(run_id)]}
+
+
+# The page itself (web/index.html, app.js, style.css) at http://127.0.0.1:8000/.
+# Mounted last, so the /api/... routes above are matched first.
+app.mount("/", StaticFiles(directory=config.PROJECT_ROOT / "web", html=True), name="web")

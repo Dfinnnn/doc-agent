@@ -42,40 +42,67 @@ def indent(text, width=13):
     return str(text).replace("\n", "\n" + " " * width)
 
 
-def describe(op):
-    """A short preview of one operation: before -> after and its issues."""
-    lines = [f" #{op['id']}  {op['kind']}  {op['target']}"]
+def preview_data(op):
+    """What one operation would change, as data: the terminal prints it (describe),
+    the web page draws it as a card.
+
+    Returns {"fields": [{"name", "old", "new"}], "kept": [field names left as is],
+             "note": extra text or None}.
+    """
     proposal = op["proposal"]
+    data = {"fields": [], "kept": [], "note": None}
     if op["kind"] == "sheet_row":
         try:
             before = current_value(op)
         except Exception as error:  # e.g. the tab does not exist yet
-            before = {"(cannot read)": str(error)}
+            before, data["note"] = {}, f"cannot read the current row: {error}"
         for field in SHEET_FIELDS:
             if field not in proposal or before.get(field, "") == proposal[field]:
-                continue  # not changed by this operation
-            old, new = before.get(field, ""), proposal[field]
-            lines.append(f"     {field}: {indent(old or '(empty)')}")
-            lines.append(f"       ->  {indent(new or '(empty)')}")
-        kept = [f for f in SHEET_FIELDS
-                if f not in proposal or before.get(f, "") == proposal[f]]
-        if kept:
-            lines.append(f"     kept as is: {', '.join(kept)}")
+                data["kept"].append(field)  # not changed by this operation
+            else:
+                data["fields"].append({"name": field, "old": before.get(field, ""),
+                                       "new": proposal[field]})
     elif op["kind"] == "logbook_entry":
         try:
-            before = current_value(op)["activities"].replace("\n", " | ") or "(empty)"
+            old = current_value(op)["activities"]
         except Exception:
-            before = "(no row yet)"
-        lines.append(f"     before: {before}")
+            old, data["note"] = "", "no row yet"
         mark = "• " if proposal.get("bullets", True) else ""
-        lines.append("     after:  " + indent("\n".join(f"{mark}{a}" for a in proposal["activities"])))
+        data["fields"].append({"name": "activities", "old": old,
+                               "new": "\n".join(f"{mark}{a}" for a in proposal["activities"])})
     elif op["kind"] == "week_table":
-        lines.append(f"     add table: {proposal['header']}")
+        data["note"] = f"add table: {proposal['header']}"
     elif op["kind"] == "month_tab":
-        lines.append(f"     add tab: {op['target']}")
+        data["note"] = f"add tab: {op['target']}"
     elif op["kind"] == "setting":
-        scope = "new and existing entries" if proposal["apply_to"] == "all" else "new entries"
-        lines.append(f"     {proposal['setting']}: {proposal['old']}  ->  {proposal['new']}  ({scope})")
+        data["fields"].append({"name": proposal["setting"], "old": proposal["old"],
+                               "new": proposal["new"]})
+    return data
+
+
+def describe(op):
+    """A short preview of one operation for the terminal: before -> after and its issues."""
+    lines = [f" #{op['id']}  {op['kind']}  {op['target']}"]
+    data = preview_data(op)
+    if op["kind"] == "sheet_row":
+        if data["note"]:
+            lines.append(f"     ({data['note']})")
+        for field in data["fields"]:
+            lines.append(f"     {field['name']}: {indent(field['old'] or '(empty)')}")
+            lines.append(f"       ->  {indent(field['new'] or '(empty)')}")
+        if data["kept"]:
+            lines.append(f"     kept as is: {', '.join(data['kept'])}")
+    elif op["kind"] == "logbook_entry":
+        field = data["fields"][0]
+        before = "(no row yet)" if data["note"] else field["old"].replace("\n", " | ") or "(empty)"
+        lines.append(f"     before: {before}")
+        lines.append("     after:  " + indent(field["new"]))
+    elif op["kind"] in ("week_table", "month_tab"):
+        lines.append(f"     {data['note']}")
+    elif op["kind"] == "setting":
+        field = data["fields"][0]
+        scope = "new and existing entries" if op["proposal"]["apply_to"] == "all" else "new entries"
+        lines.append(f"     {field['name']}: {field['old']}  ->  {field['new']}  ({scope})")
     for found in op["issues"]:
         lines.append(f"     [{found['severity']}] {found['text']}")
     return "\n".join(lines)
