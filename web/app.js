@@ -189,6 +189,7 @@ async function send(text) {
   } finally {
     page.busy = false;
     updateComposer();
+    refreshActivity();
     if (!$("chat-input").disabled) $("chat-input").focus();
   }
 }
@@ -531,12 +532,14 @@ async function decideNow(ids) {
     const result = await api(`/api/runs/${page.waitingRun}/decide`, { approved: ids, choices });
     addMessage("app", result.results.join("\n"));
     showProposals(null, []);
+    if (result.next_waiting !== null) await showWaiting(result.next_waiting);
   } catch (error) {
     preview.error = error.message;  // nothing was written: decide checks before writing
   } finally {
     preview.acting = false;
     renderPreview();
     updateComposer();
+    refreshActivity();
   }
 }
 
@@ -556,6 +559,170 @@ async function refine(ids, instruction) {
   }
 }
 
+// ---- Activity: recent runs, each run's timeline, and undo ----
+
+const activity = { runs: [], open: null, detail: null, error: "" };
+
+const STATUS_NAMES = { proposed: "waiting", written: "written", undone: "undone",
+                       rejected: "rejected", failed: "failed", approved: "approved" };
+const UNDOABLE = ["sheet_row", "logbook_entry", "setting"];
+
+async function loadActivity() {
+  try {
+    activity.runs = (await api("/api/runs?limit=30")).runs;
+    if (activity.open !== null) activity.detail = await api(`/api/runs/${activity.open}/events`);
+    activity.error = "";
+  } catch (error) {
+    activity.error = `Can't load the activity: ${error.message}`;
+  }
+  renderActivity();
+}
+
+function renderActivity() {
+  const panel = $("panel-activity");
+  const top = el("div", "preview-top");
+  top.append(el("span", "muted", "Newest first"));
+  const buttons = el("span", "action-right");
+  const undoLast = el("button", "small", "Undo last");
+  undoLast.addEventListener("click", openUndoLast);
+  const refresh = el("button", "small", "Refresh");
+  refresh.addEventListener("click", loadActivity);
+  buttons.append(undoLast, refresh);
+  top.append(buttons);
+
+  const list = el("ol", "runs");
+  for (const run of activity.runs) list.append(runRow(run));
+  const parts = [top];
+  if (activity.error) parts.push(el("p", "action-error", activity.error));
+  parts.push(list);
+  panel.replaceChildren(...parts);
+}
+
+function runRow(run) {
+  const item = el("li", "run-item");
+  const row = el("button", "run");
+  row.setAttribute("aria-expanded", activity.open === run.id);
+  row.append(el("strong", null, `#${run.id}`), el("span", "muted", run.started_at.slice(11, 16)),
+             el("span", "run-message", run.message));
+  const pills = el("span", "pills");
+  const statuses = Object.entries(run.statuses);
+  if (!statuses.length) pills.append(el("span", "pill none", "no changes"));
+  for (const [status, count] of statuses) {
+    pills.append(el("span", `pill ${status}`, `${STATUS_NAMES[status] || status} ${count}`));
+  }
+  row.append(pills);
+  row.addEventListener("click", async () => {
+    activity.open = activity.open === run.id ? null : run.id;
+    activity.detail = null;
+    if (activity.open !== null) await loadActivity(); else renderActivity();
+    document.querySelector(`.run-item:nth-child(${activity.runs.indexOf(run) + 1}) .run`)?.focus();
+  });
+  item.append(row);
+  if (activity.open === run.id && activity.detail) item.append(runDetail(activity.detail));
+  return item;
+}
+
+function runDetail(detail) {
+  const box = el("div", "run-detail");
+  const timeline = el("ol", "timeline");
+  for (const event of detail.events) {
+    const [label, text] = describeEvent(event);
+    const line = el("li", `event ${event.kind}`);
+    line.append(el("span", "muted", event.at.slice(11)), el("span", "event-kind", label), el("span", "event-text", text));
+    timeline.append(line);
+  }
+  box.append(timeline);
+  for (const op of detail.operations) {
+    const row = el("div", "op-row");
+    const name = el("span");
+    name.append(`#${op.id} · ${KIND_NAMES[op.kind] || op.kind} · ${op.target} `,
+                el("span", `pill ${op.status}`, STATUS_NAMES[op.status] || op.status));
+    row.append(name);
+    if (op.status === "written" && UNDOABLE.includes(op.kind)) {
+      const undoButton = el("button", "small", "Undo");
+      undoButton.addEventListener("click", () => openUndo([op]));
+      row.append(undoButton);
+    } else if (op.status === "written") {
+      row.append(el("span", "muted", "remove by hand if needed"));
+    }
+    box.append(row);
+  }
+  return box;
+}
+
+// One activity-log event -> [label, text]
+function describeEvent(event) {
+  const d = event.data;
+  const ids = (list) => list.map((id) => `#${id}`).join(", ");
+  switch (event.kind) {
+    case "user_message": return ["message", d.text];
+    case "answer": return ["answer", d.text.length > 160 ? `${d.text.slice(0, 160)}…` : d.text];
+    case "llm_call": {
+      const tokens = d.tokens || {};
+      const chose = d.tools_chosen.length ? d.tools_chosen.map((t) => STEP_NAMES[t] || t).join(", ") : "answer";
+      return ["model", `${d.model} · ${d.seconds}s · ${tokens.input ?? "?"} in / ${tokens.output ?? "?"} out → ${chose}`];
+    }
+    case "tool_call": return ["tool", STEP_NAMES[d.name] || d.name];
+    case "tool_result": return ["result", d.result.length > 120 ? `${d.result.slice(0, 120)}…` : d.result];
+    case "preview": return ["preview", ids(d.operations)];
+    case "refine": return ["refine", `#${d.operation} "${d.instruction}"`];
+    case "decision": return ["decision", d.approved.length ? `approved ${ids(d.approved)}` : "none approved"];
+    case "write": return ["write", `#${d.operation} (${d.choice})`];
+    case "write_failed": return ["failed", `#${d.operation}: ${d.error}`];
+    case "undo": return ["undo", `#${d.operation} back to its old value`];
+    case "undo_failed": return ["failed", `undo of #${d.operation}: ${d.error || "result did not match"}`];
+    case "error": return ["error", d.error];
+    case "limit": return ["limit", `${d.rounds} tool rounds used`];
+    default: return [event.kind, JSON.stringify(d).slice(0, 160)];
+  }
+}
+
+// ---- Undo: list exactly what goes back, then ask ----
+
+let undoIds = [];
+
+function openUndo(ops) {
+  undoIds = ops.map((op) => op.id);
+  $("undo-title").textContent = `Undo ${ops.length} change${ops.length === 1 ? "" : "s"}?`;
+  $("undo-list").replaceChildren(...ops.map((op) =>
+    el("li", null, `#${op.id} · ${KIND_NAMES[op.kind] || op.kind} · ${op.target}`)));
+  $("undo-error").hidden = true;
+  $("undo-confirm").textContent = `Undo ${ops.length}`;
+  $("undo-confirm").disabled = false;
+  $("undo-dialog").showModal();
+}
+
+async function openUndoLast() {
+  try {
+    const { operations } = await api("/api/undo/preview");
+    if (!operations.length) {
+      activity.error = "There are no written changes to undo.";
+      renderActivity();
+      return;
+    }
+    openUndo(operations);
+  } catch (error) {
+    activity.error = error.message;
+    renderActivity();
+  }
+}
+
+$("undo-confirm").addEventListener("click", async () => {
+  $("undo-confirm").disabled = true;
+  $("undo-confirm").textContent = "Undoing…";
+  try {
+    const result = await api("/api/undo", { ids: undoIds });  // exactly the listed changes
+    $("undo-dialog").close();
+    addMessage("app", result.results.join("\n"));
+    loadActivity();
+  } catch (error) {
+    $("undo-error").textContent = error.message;
+    $("undo-error").hidden = false;
+    $("undo-confirm").disabled = false;
+    $("undo-confirm").textContent = "Try again";
+  }
+});
+
 // ---- Tabs (click, or Left / Right arrow keys) ----
 
 const tabs = ["preview", "activity"];
@@ -567,6 +734,12 @@ function selectTab(name) {
     $(`tab-${tab}`).tabIndex = selected ? 0 : -1;
     $(`panel-${tab}`).hidden = !selected;
   }
+  if (name === "activity") loadActivity();
+}
+
+// Keep the Activity tab current after anything that adds to the log
+function refreshActivity() {
+  if (!$("panel-activity").hidden) loadActivity();
 }
 
 for (const tab of tabs) {
@@ -579,6 +752,16 @@ for (const tab of tabs) {
   });
 }
 
+// Changes left waiting by an earlier order (a reload, a restart, the terminal)
+async function showWaiting(runId) {
+  const waiting = await api(`/api/runs/${runId}/proposals`);
+  const run = (await api("/api/runs?limit=50")).runs.find((r) => r.id === runId);
+  let order = run ? run.message.split("\n")[0] : "";
+  if (order.length > 60) order = `${order.slice(0, 60)}…`;
+  addMessage("app", `Run #${runId}${order ? ` ("${order}")` : ""} still has changes waiting. Decide on them in Preview.`);
+  showProposals(waiting.run_id, waiting.proposals);
+}
+
 // ---- Start: model name, and any preview still waiting from before a reload ----
 
 async function start() {
@@ -587,10 +770,7 @@ async function start() {
     $("model").textContent = health.model;
     renderPreview();
     const runs = await api("/api/runs?limit=1");
-    if (runs.waiting_run !== null) {
-      const waiting = await api(`/api/runs/${runs.waiting_run}/proposals`);
-      showProposals(waiting.run_id, waiting.proposals);
-    }
+    if (runs.waiting_run !== null) await showWaiting(runs.waiting_run);
   } catch (error) {
     addMessage("app error", `Can't reach the server: ${error.message}`);
   }

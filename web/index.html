@@ -44,6 +44,19 @@
     </section>
   </main>
 
+  <dialog id="undo-dialog" aria-labelledby="undo-title">
+    <form method="dialog" class="undo-form">
+      <h2 id="undo-title">Undo changes?</h2>
+      <p class="muted">Each goes back to its value before the write.</p>
+      <ul id="undo-list" class="undo-list"></ul>
+      <p id="undo-error" class="action-error" hidden></p>
+      <div class="action-right">
+        <button value="cancel">Cancel</button>
+        <button type="button" id="undo-confirm" class="primary">Undo</button>
+      </div>
+    </form>
+  </dialog>
+
   <script src="app.js"></script>
 </body>
 </html>

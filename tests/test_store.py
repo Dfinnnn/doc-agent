@@ -55,5 +55,15 @@ def test_recent_runs_newest_first_with_status_counts(store):
     assert len(store.recent_runs(limit=1)) == 1
 
 
+def test_waiting_runs_are_the_ones_with_proposed_changes(store):
+    old = store.start_run("old", "gemini", "m")
+    decided = store.start_run("decided", "gemini", "m")
+    new = store.start_run("new", "gemini", "m")
+    store.add_operation(old, "sheet_row", "02/11/2026", {}, [])
+    store.update_operation(store.add_operation(decided, "sheet_row", "03/11/2026", {}, []), WRITTEN)
+    store.add_operation(new, "sheet_row", "04/11/2026", {}, [])
+    assert store.waiting_runs() == [new, old]
+
+
 def test_missing_operation_returns_none(store):
     assert store.operation(999) is None

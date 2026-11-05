@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from app import config
 from app.agent.approval import decide, needs_choice, pending_ops, preview_data, refine_ops
-from app.agent.loop import Session, handle_message, tell_agent
+from app.agent.loop import Session, handle_message, tell_agent, undo_targets
 from app.store.db import Store
 
 app = FastAPI(title="Document Assistant Agent")
@@ -26,7 +26,7 @@ logging.getLogger("uvicorn.access").addFilter(
     lambda record: "/api/progress" not in record.getMessage())
 
 # One chat for the one local user, made on the first message (like the terminal's).
-state = {"session": None, "waiting_run": None}
+state = {"session": None}
 # One request at a time: the session and the documents are shared, so a double
 # click must not run two orders at once.
 lock = threading.Lock()
@@ -48,10 +48,18 @@ def proposals(store, run_id):
             for op in pending_ops(store, run_id)]
 
 
+def waiting_run(store):
+    """The newest run with changes nobody approved or rejected yet (None if none).
+    Read from the database, not from memory, so a server restart or a closed
+    terminal never leaves changes waiting unseen."""
+    runs = store.waiting_runs()
+    return runs[0] if runs else None
+
+
 def refuse_if_waiting(session):
     """Same rule as the terminal: decide on a preview before the next order."""
-    waiting = state["waiting_run"]
-    if waiting is not None and pending_ops(session.store, waiting):
+    waiting = waiting_run(session.store)
+    if waiting is not None:
         raise HTTPException(409, f"Run {waiting} has changes waiting for approval. "
                                  f"Approve or reject them first.")
 
@@ -79,7 +87,6 @@ def chat(request: ChatRequest):
         except ValueError as error:  # e.g. an empty message
             raise HTTPException(400, str(error))
         waiting_ops = proposals(session.store, reply["run_id"]) if reply["kind"] == "answer" else []
-        state["waiting_run"] = reply["run_id"] if waiting_ops else None
         if waiting_ops:  # the same activity-log event the terminal records
             session.recorder(reply["run_id"])("preview", {"operations": [o["id"] for o in waiting_ops]})
         return {**reply, "proposals": waiting_ops}
@@ -142,9 +149,18 @@ def run_decide(run_id: int, request: DecideRequest):
         except ValueError as error:  # e.g. a number not in the preview, a missing choice
             raise HTTPException(400, str(error))
         tell_agent(session.messages, results)  # so the agent knows what was written
-        if state["waiting_run"] == run_id:
-            state["waiting_run"] = None
-        return {"run_id": run_id, "results": results}
+        return {"run_id": run_id, "results": results, "next_waiting": waiting_run(session.store)}
+
+
+@app.get("/api/undo/preview")
+def undo_preview():
+    """Which changes a plain "undo" would put back, so the page can list them and ask
+    before undoing. Uses the same rule as the terminal's "undo" (undo_targets)."""
+    with lock:
+        store = get_session().store
+        ops = [store.operation(op_id) for op_id in undo_targets("undo", store)]
+        return {"operations": [{k: op[k] for k in ("id", "run_id", "kind", "target")}
+                               for op in ops if op]}
 
 
 class UndoRequest(BaseModel):
@@ -186,7 +202,8 @@ def progress():
 def runs(limit: int = 20):
     """The newest runs for the activity panel, with how many changes are in each status."""
     with lock:
-        return {"runs": get_session().store.recent_runs(limit), "waiting_run": state["waiting_run"]}
+        store = get_session().store
+        return {"runs": store.recent_runs(limit), "waiting_run": waiting_run(store)}
 
 
 @app.get("/api/runs/{run_id}/events")

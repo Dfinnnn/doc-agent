@@ -95,6 +95,13 @@ class Store:
         row = self.conn.execute("SELECT MAX(id) FROM runs").fetchone()
         return row[0]
 
+    def waiting_runs(self):
+        """Runs that still have proposed changes nobody approved or rejected, newest first."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT run_id FROM operations WHERE status = ? ORDER BY run_id DESC",
+            (PROPOSED,))
+        return [row[0] for row in rows]
+
     def recent_runs(self, limit=20):
         """The newest runs first, each with how many of its changes are in each status,
         e.g. {"id": 5, "message": "sync", "statuses": {"written": 3, "rejected": 1}}."""

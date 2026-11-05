@@ -224,6 +224,51 @@ button.small { font-size: 13px; padding: 3px 10px; }
   border: 1px solid var(--border); border-radius: var(--radius);
 }
 
+/* ---- Activity ---- */
+.runs { list-style: none; margin: 0 0 16px; padding: 0; }
+.run-item { border-top: 1px solid var(--border); }
+.run-item:first-child { border-top: none; }
+.run {
+  width: 100%; display: grid; grid-template-columns: 48px 48px minmax(0, 1fr) auto;
+  gap: 10px; align-items: center; text-align: left;
+  border: none; border-radius: 0; background: none; padding: 10px 4px;
+}
+.run:hover:not(:disabled) { background: var(--surface-soft); }
+.run[aria-expanded="true"] { background: var(--surface-soft); }
+.run-message { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pills { display: flex; gap: 4px; }
+.pill { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--surface-soft); color: var(--muted); white-space: nowrap; }
+.pill.written { background: var(--new-bg); color: var(--new-text); }
+.pill.undone { background: #e6f1fb; color: #0c447c; }
+.pill.proposed { background: var(--warn-bg); color: var(--warn-text); }
+.pill.failed { background: var(--danger-bg); color: var(--danger-text); }
+.run-detail { padding: 4px 4px 14px 62px; }
+.timeline {
+  list-style: none; margin: 0 0 10px; padding: 2px 0 2px 12px;
+  border-left: 2px solid #9fe1cb; display: grid; gap: 6px;
+}
+.event { display: grid; grid-template-columns: 64px 70px minmax(0, 1fr); gap: 8px; font-size: 13px; }
+.event-kind { color: var(--accent); font-weight: 600; }
+.event-text { overflow-wrap: anywhere; white-space: pre-wrap; }
+.event.error .event-kind, .event.write_failed .event-kind, .event.undo_failed .event-kind { color: var(--danger-text); }
+.op-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 6px 10px; margin-top: 6px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 14px;
+}
+
+/* ---- Undo confirm ---- */
+dialog {
+  border: 1px solid var(--border); border-radius: 12px; padding: 20px; width: min(440px, 90vw);
+  color: var(--text); background: var(--surface);
+}
+dialog::backdrop { background: rgb(0 0 0 / 0.35); }
+dialog h2 { font-size: 17px; margin: 0 0 4px; }
+.undo-form > p { margin: 0 0 10px; font-size: 14px; }
+.undo-list { margin: 0 0 14px; padding-left: 20px; max-height: 40vh; overflow-y: auto; }
+.undo-list li { margin: 3px 0; }
+.undo-form .action-right { justify-content: flex-end; }
+
 /* The action bar stays at the bottom of the panel while the cards scroll */
 .actions {
   position: sticky; bottom: 0; margin-top: auto; background: var(--surface);
