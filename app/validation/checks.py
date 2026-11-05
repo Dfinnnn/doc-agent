@@ -310,7 +310,10 @@ def check_draft_against_notes(notes, draft):
 
     for field in DRAFT_TEXT_FIELDS:
         value = draft[field]
-        sentences = value if isinstance(value, list) else re.split(r"[.\n]", value)
+        # Split into sentences, also inside each list item, so a word that starts
+        # a second sentence is not mistaken for a name
+        text = "\n".join(value) if isinstance(value, list) else value
+        sentences = re.split(r"[.\n]", text)
         added = []
         for sentence in sentences:
             words = re.findall(r"[A-Za-z][\w-]*|\d+(?:[.:]\d+)?", sentence)

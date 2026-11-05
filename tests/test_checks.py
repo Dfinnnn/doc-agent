@@ -281,3 +281,9 @@ def test_weekend_row_in_the_wrong_week():
                     "activities": "• x", "weekend_row": True})  # 22/08 is Week 1
     assert "Weekend row 22/08/2026 is in the Week 2 table" in whats(
         check_logbook(headers, records, TODAY))
+
+
+def test_second_sentence_inside_a_bullet_is_not_a_name():
+    notes = "- did QA testing and wrote up the findings"
+    draft = make_draft("", ["Did QA testing. Compiled the findings into a report."])
+    assert check_draft_against_notes(notes, draft) == []

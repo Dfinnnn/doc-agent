@@ -8,6 +8,7 @@
   "font_name": "Times New Roman",
   "font_size": 12,
   "date_format": "%d/%m/%Y",
+  "date_align": "center",
   "bullet": "•",
   "bullet_indent_pt": 12,
   "wording": {

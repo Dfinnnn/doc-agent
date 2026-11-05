@@ -36,9 +36,9 @@ def current_value(op):
     return None
 
 
-def indent(text):
+def indent(text, width=13):
     """Line up multi-line text under the first line in the preview."""
-    return str(text).replace("\n", "\n             ")
+    return str(text).replace("\n", "\n" + " " * width)
 
 
 def describe(op):
@@ -149,17 +149,32 @@ def ask_approval(ops, input_fn):
             return set(ids), answer
         if lower == "n":
             return set(), answer
-        refine = re.fullmatch(r"r\s+#?(\d+)\s+(.+)", answer, re.IGNORECASE)
-        if refine and int(refine.group(1)) in ids:
-            return None, (int(refine.group(1)), refine.group(2))
+        # "r all <change>", "r 50 <change>", "r 50, 51 <change>"
+        refine = re.fullmatch(r"r\s+(all|#?\d+(?:\s*,\s*#?\d+)*)\s+(.+)", answer, re.IGNORECASE)
+        if refine:
+            which = refine.group(1).lower()
+            targets = ids if which == "all" else [int(n) for n in re.findall(r"\d+", which)]
+            if all(t in ids for t in targets):
+                return None, (targets, refine.group(2))
         refine_one = re.fullmatch(r"r\s+(\D.*)", answer, re.IGNORECASE)
         if refine_one and len(ids) == 1:
-            return None, (ids[0], refine_one.group(1))
+            return None, (ids, refine_one.group(1))
         parts = lower.replace("#", "").replace(" ", "").split(",")
         if parts and all(part.isdigit() and int(part) in ids for part in parts):
             return {int(part) for part in parts}, answer
         print(f"   Please type y, n, numbers from this list: {', '.join(map(str, ids))}, "
               f"or r <number> <what to change>")
+
+
+def draft_text(op):
+    """The draft text of a proposal, as shown when refining (empty if it has none)."""
+    proposal = op["proposal"]
+    if op["kind"] == "logbook_entry":
+        mark = "• " if proposal.get("bullets", True) else ""
+        return "\n".join(f"{mark}{a}" for a in proposal["activities"])
+    if op["kind"] == "sheet_row":
+        return "\n".join(f"{f}: {proposal[f]}" for f in SHEET_TEXT_FIELDS if proposal.get(f))
+    return ""
 
 
 def refine_op(store, op, instruction):
@@ -208,16 +223,24 @@ def review(store, run_id, record, input_fn=input):
         chosen, answer = ask_approval(ops, input_fn)
         if chosen is not None:
             break
-        op_id, instruction = answer  # refine a draft, show it again, then ask again
-        op = next(o for o in ops if o["id"] == op_id)
-        try:
-            message = refine_op(store, op, instruction)
-        except Exception as error:
-            message = f"#{op_id} could not be refined: {type(error).__name__}: {error}"
-        record("refine", {"operation": op_id, "instruction": instruction, "result": message})
-        print(f"\n   {message}")
-        ops = sorted(store.operations(run_id, PROPOSED), key=lambda o: (ORDER[o["kind"]], o["id"]))
-        print(describe(next(o for o in ops if o["id"] == op_id)))
+        targets, instruction = answer  # refine drafts, show old vs new, then ask again
+        for op_id in targets:
+            op = next(o for o in ops if o["id"] == op_id)
+            old_text = draft_text(op)
+            try:
+                message = refine_op(store, op, instruction)
+            except Exception as error:
+                message = f"#{op_id} could not be refined: {type(error).__name__}: {error}"
+            record("refine", {"operation": op_id, "instruction": instruction, "result": message})
+            ops = sorted(store.operations(run_id, PROPOSED),
+                         key=lambda o: (ORDER[o["kind"]], o["id"]))
+            new_op = next(o for o in ops if o["id"] == op_id)
+            print(f"\n   {message}")
+            if old_text:
+                print(f"     draft before:  {indent(old_text, 20)}")
+                print(f"     draft now:     {indent(draft_text(new_op), 20)}")
+            for found in new_op["issues"]:
+                print(f"     [{found['severity']}] {found['text']}")
     record("decision", {"answer": answer, "approved": sorted(chosen)})
 
     for op in ops:

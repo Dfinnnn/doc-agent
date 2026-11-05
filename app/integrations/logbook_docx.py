@@ -24,6 +24,7 @@ FONT_SIZE = PROFILE["font_size"]
 DATE_FORMAT = PROFILE["date_format"]       # full year, since the internship runs into 2027
 EMPTY_LINES = PROFILE["empty_lines"]       # empty lines in a new Activities cell, as in the template
 BULLET = PROFILE["bullet"]
+DATE_ALIGN = getattr(WD_ALIGN_PARAGRAPH, PROFILE["date_align"].upper())  # e.g. "center"
 BULLET_INDENT = Pt(PROFILE["bullet_indent_pt"])  # wrapped lines line up with the text, not the bullet
 
 
@@ -89,12 +90,14 @@ def read_logbook(doc=None):
     return records
 
 
-def set_cell_text(cell, lines, bullets=False):
+def set_cell_text(cell, lines, bullets=False, align=None):
     """Replace a cell's text, one paragraph per line, in the logbook font.
 
-    Reuses the cell's existing (empty) paragraphs so the row keeps its height
-    and alignment; adds more paragraphs only if there are more lines.
+    Reuses the cell's existing (empty) paragraphs so the row keeps its height;
+    adds more paragraphs only if there are more lines.
     With bullets=True, each line becomes a left-aligned "• " point.
+    align sets every line's alignment, so all rows look the same whatever the
+    template's empty rows had.
     """
     paragraphs = cell.paragraphs
     while len(paragraphs) < len(lines):
@@ -105,6 +108,8 @@ def set_cell_text(cell, lines, bullets=False):
         if i >= len(lines):
             continue
         text = lines[i]
+        if align is not None:
+            paragraph.alignment = align
         if bullets:
             text = f"{BULLET} {text}"
             paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
@@ -172,8 +177,9 @@ def write_entry(day, activities, overwrite=False, bullets=True):
 
     # Drop any bullet the text already has ("*", "-", "•"), so it is never doubled
     tasks = [task.strip().lstrip("*-•").strip() for task in activities]
-    set_cell_text(date_cell, [f"{day:{DATE_FORMAT}}"])
-    set_cell_text(activities_cell, [task for task in tasks if task], bullets=bullets)
+    set_cell_text(date_cell, [f"{day:{DATE_FORMAT}}"], align=DATE_ALIGN)
+    set_cell_text(activities_cell, [task for task in tasks if task], bullets=bullets,
+                  align=WD_ALIGN_PARAGRAPH.LEFT)
     doc.save(config.LOGBOOK_PATH)  # fails if the file is open in Word
 
 
@@ -191,8 +197,8 @@ def restore_entry(day, date_text, activities_text):
         row._tr.getparent().remove(row._tr)
     else:
         tasks = [line.lstrip(BULLET).strip() for line in activities_text.splitlines() if line.strip()]
-        set_cell_text(row.cells[0], [date_text] if date_text else [])
-        set_cell_text(row.cells[1], tasks, bullets=True)
+        set_cell_text(row.cells[0], [date_text] if date_text else [], align=DATE_ALIGN)
+        set_cell_text(row.cells[1], tasks, bullets=True, align=WD_ALIGN_PARAGRAPH.LEFT)
     doc.save(config.LOGBOOK_PATH)
 
 
