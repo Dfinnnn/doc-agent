@@ -83,17 +83,19 @@ function formatAnswer(text) {
 
 // ---- Chat ----
 
+const clockTime = () => new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+// One journal entry: the time in the margin, then the text
 function addMessage(who, content) {
-  $("empty").hidden = true;
   const item = el("li", `msg ${who}`);
+  const body = el("div", "body");
   if (who === "agent" || who === "working") {
-    item.append(el("span", "mark", "DA"));
-    const body = el("div", "body");
+    body.append(el("div", "who", "Assistant"));
     body.append(typeof content === "string" ? formatAnswer(content) : content);
-    item.append(body);
   } else {
-    item.textContent = content;  // your words and app notes stay plain text
+    body.textContent = content;  // your words and app notes stay plain text
   }
+  item.append(el("span", "time", clockTime()), body);
   $("messages").append(item);
   item.scrollIntoView({ block: "end", behavior: "smooth" });
   return item;
@@ -106,7 +108,7 @@ function updateComposer() {
   $("send").disabled = locked;
   input.placeholder = page.busy ? "Working…"
     : page.waitingRun !== null ? "Decide on the preview first"
-    : "Type an order";
+    : "Write an order, e.g. log update 05/11: …";
   $("status").textContent = page.busy ? "working" : "ready";
   $("status").className = page.busy ? "busy" : "";
 }
@@ -240,7 +242,7 @@ const preview = {
 };
 
 const KIND_NAMES = {
-  sheet_row: "Sheet row", logbook_entry: "Logbook", setting: "Setting",
+  sheet_row: "Work log", logbook_entry: "Logbook", setting: "Setting",
   week_table: "New week table", month_tab: "New month tab",
 };
 const FIELD_NAMES = {
@@ -304,11 +306,26 @@ function linkButton(text, onClick) {
   return button;
 }
 
+// The left margin of a preview row: the day large, like a logbook date
+function dateMargin(target) {
+  const margin = el("div", "margin");
+  const match = target.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!match) { margin.append(el("span", "margin-text", target)); return margin; }
+  const day = new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]));
+  const month = day.toLocaleDateString("en-GB", { month: "short" });
+  const weekday = day.toLocaleDateString("en-GB", { weekday: "short" });
+  margin.append(el("b", null, match[1]), el("span", null, `${month} · ${weekday}`));
+  return margin;
+}
+
 function card(op) {
   const box = el("article", blocked(op) ? "card blocked" : "card");
   box.id = `card-${op.id}`;
+  box.append(dateMargin(op.target));
+  const content = el("div", "card-body");
+  box.append(content);
 
-  // Header: tick box, date (or setting name), kind, number, Refine
+  // Header: tick box, which document, number, Refine
   const head = el("div", "card-head");
   const pick = el("input");
   pick.type = "checkbox";
@@ -319,11 +336,11 @@ function card(op) {
     if (pick.checked) preview.selected.add(op.id); else preview.selected.delete(op.id);
     renderPreview();
   });
-  const title = el("label", "card-title", op.target);
+  const title = el("label", "card-title", KIND_NAMES[op.kind] || op.kind);
   title.htmlFor = pick.id;
-  head.append(pick, title, el("span", "kind", KIND_NAMES[op.kind] || op.kind), el("span", "muted", `#${op.id}`));
+  head.append(pick, title, el("span", "muted", `#${op.id}`));
   if (op.kind === "sheet_row" || op.kind === "logbook_entry") {
-    const refine = el("button", "small", "Refine");
+    const refine = el("button", "link", "Refine");
     refine.type = "button";
     refine.disabled = preview.acting;
     refine.addEventListener("click", () => {
@@ -333,7 +350,7 @@ function card(op) {
     });
     head.append(el("span", "grow"), refine);
   }
-  box.append(head);
+  content.append(head);
 
   // Old -> new, per field
   for (const field of op.fields) {
@@ -345,27 +362,28 @@ function card(op) {
     values.append(field.old ? el("div", "old", field.old) : el("div", "old empty", "(empty)"),
                   el("div", "new", field.new || "(empty)"));
     row.append(values);
-    box.append(row);
+    content.append(row);
   }
-  if (op.note) box.append(el("p", "muted note", op.note));
+  if (op.note) content.append(el("p", "muted note", op.note));
   if (op.kept.length) {
-    box.append(el("p", "muted note", `Kept: ${op.kept.map((f) => (FIELD_NAMES[f] || f).toLowerCase()).join(", ")}`));
+    content.append(el("p", "muted note", `Kept: ${op.kept.map((f) => (FIELD_NAMES[f] || f).toLowerCase()).join(", ")}`));
   }
 
-  // Issues, then the choice this change needs
+  // Issues as one short line, then the choice this change needs
   const issues = op.issues.filter((issue) => issue.severity !== "conflict");
   if (issues.length) {
-    const tags = el("div", "issues");
-    for (const issue of issues) {
+    const flags = el("p", "flags");
+    issues.forEach((issue, i) => {
+      if (i) flags.append(" · ");
       const text = issue.severity === "block" ? `Can't be approved: ${issue.text}` : issue.text;
-      tags.append(el("span", `tag ${issue.severity}`, text));
-    }
-    box.append(tags);
+      flags.append(el("span", issue.severity, text));
+    });
+    content.append(flags);
   }
-  if (op.needs) box.append(choiceGroup(op));
+  if (op.needs) content.append(choiceGroup(op));
 
-  if (preview.refines[op.id]) box.append(refineChanges(preview.refines[op.id]));
-  if (preview.refining === op.id) box.append(refineBox([op.id], "Rewrite"));
+  if (preview.refines[op.id]) content.append(refineChanges(preview.refines[op.id]));
+  if (preview.refining === op.id) content.append(refineBox([op.id], "Rewrite"));
   return box;
 }
 
@@ -426,7 +444,7 @@ function refineChanges(refine) {
 function choiceGroup(op) {
   const group = el("div", "choice");
   group.setAttribute("role", "radiogroup");
-  if (op.needs === "conflict") group.append(el("span", "tag conflict", "Already has content"));
+  if (op.needs === "conflict") group.append(el("span", "flags conflict", "Already has content"));
   const segments = el("div", "segments");
   for (const [value, text] of CHOICE_NAMES[op.needs]) {
     const label = el("label", "segment");
@@ -483,7 +501,7 @@ function actionBar(count) {
   }
   if (preview.error) bar.append(el("p", "action-error", preview.error));
   const row = el("div", "action-row");
-  const refineAll = el("button", null, "Refine all");
+  const refineAll = el("button", "link", "Refine all");
   refineAll.type = "button";
   refineAll.disabled = preview.acting;
   refineAll.addEventListener("click", () => {
@@ -766,8 +784,11 @@ async function showWaiting(runId) {
 
 async function start() {
   try {
+    $("today").textContent = new Date().toLocaleDateString("en-GB",
+      { weekday: "long", day: "numeric", month: "long" });
     const health = await api("/api/health");
     $("model").textContent = health.model;
+    $("logbook-file").textContent = health.logbook_file;
     renderPreview();
     const runs = await api("/api/runs?limit=1");
     if (runs.waiting_run !== null) await showWaiting(runs.waiting_run);

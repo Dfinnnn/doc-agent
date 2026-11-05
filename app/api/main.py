@@ -71,8 +71,10 @@ class ChatRequest(BaseModel):
 
 @app.get("/api/health")
 def health():
-    """A quick check that the server is running and which model it will use."""
-    return {"status": "ok", "provider": config.LLM_PROVIDER, "model": config.LLM_MODEL}
+    """A quick check that the server is running, which model it will use, and which
+    logbook file it writes to (the file name only: no Sheet ID, no folder path)."""
+    return {"status": "ok", "provider": config.LLM_PROVIDER, "model": config.LLM_MODEL,
+            "logbook_file": config.LOGBOOK_PATH.name}
 
 
 @app.post("/api/chat")
