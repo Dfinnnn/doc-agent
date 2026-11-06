@@ -299,6 +299,11 @@ def check_consistency(sheet_records, logbook_records, today):
 
 DRAFT_TEXT_FIELDS = ["tasks", "challenges", "learnings", "next_steps", "activities"]
 BULLET_MARKS = ("-", "*", "•")
+# Words that claim a result or purpose ("successfully", "ensured", "verified", ...).
+# A draft may use one only if the notes do (matched on the first 5 letters, so
+# a typo in the notes such as "succeful" still counts).
+OUTCOME_STEMS = ("success", "verif", "ensur", "enabl", "improv", "correctly", "properly",
+                 "effective", "seamless", "facilitat", "optimi", "streamlin", "robust")
 
 
 def check_draft_against_notes(notes, draft):
@@ -329,6 +334,23 @@ def check_draft_against_notes(notes, draft):
                 f"draft {field}", f"Possible added fact: {', '.join(unique)} not in the notes",
                 "the model added a name or number", "warn",
                 "remove it, or add it to the notes if it is true"))
+
+        # Outcome words ("successfully", "ensured", ...) the notes never used
+        outcomes = [word for word in re.findall(r"[a-z]+", text.lower())
+                    if word.startswith(OUTCOME_STEMS) and word[:5] not in notes_lower]
+        if outcomes:
+            findings.append(finding(
+                f"draft {field}", "Possible added outcome: "
+                f"{', '.join(dict.fromkeys(outcomes))} not in the notes",
+                "the model described a result or purpose the notes do not state", "warn",
+                "remove it, or add it to the notes if it is true"))
+        # First person: entries are written without "I" / "we"
+        persons = re.findall(r"\b(?:I|[Mm]e|[Mm]y|[Ww]e|[Oo]ur)\b", text)
+        if persons:
+            findings.append(finding(
+                f"draft {field}", f"First person in the draft: {', '.join(dict.fromkeys(persons))}",
+                "entries start with a past-tense verb, without I or we", "warn",
+                "refine it, e.g. 'remove the first person'"))
 
     bullets = [line for line in notes.splitlines() if line.strip().startswith(BULLET_MARKS)]
     if len(bullets) > len(draft["activities"]):

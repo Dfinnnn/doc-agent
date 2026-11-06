@@ -17,6 +17,9 @@ ORDER = {"setting": -1, "month_tab": 0, "week_table": 1, "sheet_row": 2, "logboo
 SHEET_FIELDS = ["clock_in", "clock_out", "break_time", "mode",
                 "tasks", "challenges", "learnings", "next_steps"]
 SHEET_TEXT_FIELDS = ["tasks", "challenges", "learnings", "next_steps"]
+# Issues made by check_draft_against_notes: dropped and re-checked after a refine
+DRAFT_CHECK_PREFIXES = ("Possible added fact", "Possible added outcome", "First person",
+                        "The notes have")
 
 
 def day_of(op):
@@ -262,7 +265,7 @@ def refine_op(store, op, instruction):
     draft = {f: "" for f in DRAFT_TEXT_FIELDS} | {"activities": []} | new
     found = check_draft_against_notes(f"{facts}\n{instruction}", draft)
     issues = [i for i in op["issues"]
-              if not i["text"].startswith(("Possible added fact", "The notes have"))]
+              if not i["text"].startswith(DRAFT_CHECK_PREFIXES)]
     issues += [{"text": f["what"], "severity": "warn"} for f in found]
     store.update_proposal(op["id"], proposal, issues)
     return f"#{op['id']} refined: {changes or 'rewritten as asked'}"

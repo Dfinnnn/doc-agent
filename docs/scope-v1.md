@@ -112,9 +112,10 @@ Multi-user, LangGraph, MCP, vector DB, screenshots in the logbook, stored projec
 ## 12. Open items
 - Logbook template: the Week 4 header shows Week 3's dates (copy-paste typo; should be 07/09–11/09). Fix by hand, or let the first Audit propose the fix.
 - Logbook formatting: entries in Times New Roman, size 12. Date as dd/mm/yyyy (centred, as in the template). Activities as bullet points ("•"), one per task, left-aligned. Leave / holiday rows use plain wording ("On leave" / "Public holiday"), set in the profile.
-- Drafting style (to fine-tune; the Part 5 prompt is a first version):
+- Drafting style (decided in Part 11; truthfulness wins over length):
   - Real notes are already bullet lists per date, one bullet per task (e.g. "fixing the OCR bug in system A", "building the RAG for company B's project"), often several dates in one order.
   - Every task in the notes becomes its own entry, never merged or dropped.
-  - Each task is written out fully: about 2 sentences or more, precise, naming the project / client / system from the notes. Not one-line summaries.
-  - "Elaborate" means fuller wording of the facts given (what, for whom, why, outcome if stated), never added facts.
-  - The Sheet and the Logbook may word the same task differently (Sheet formal, Logbook plain), but both keep the same facts and level of detail.
+  - Length follows the facts: one sentence per task, naming the project / client / system from the notes; a second sentence only when the notes give another fact (for whom, which system, why). For longer entries, write more in the notes.
+  - No added purpose, benefit or result ("successfully", "verified", "ensured" ...) unless the notes say it. No first person: each task starts with a past-tense verb.
+  - Code warns about outcome words not in the notes and about first person (rule checks); the user decides.
+  - The Sheet and the Logbook may word the same task differently (Sheet formal, Logbook plain), but both keep the same facts.

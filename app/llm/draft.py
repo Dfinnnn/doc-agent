@@ -70,24 +70,40 @@ Reply with JSON only: {{"days": [ {{
   "date": "dd/mm" exactly as in the notes (add "/yyyy" only if the notes give a year),
   "source_notes": the exact lines of the notes for this date, copied unchanged,
   "tasks": Sheet style (formal, precise). Every task in the notes becomes its own
-           paragraph of about 2 sentences, separated by "\n". Name the project,
-           client or system the notes mention. Never merge or drop tasks.,
+           line, separated by "\n". Name the project, client or system the notes
+           mention. Never merge or drop tasks.,
   "challenges": same style, only if the notes state a problem or difficulty,
   "learnings": same style, only if the notes state something learned,
   "next_steps": same style, only if the notes state what comes next,
   "activities": logbook style (plain, direct): a list with one entry per task,
-                1-2 sentences each, same facts as "tasks",
+                same facts as "tasks",
   "mode": one of WFO, WFH, Leave, Medical Leave, Public Holidays ONLY if the notes say it, else "",
   "clock_in", "clock_out", "break_time": "HH:MM" ONLY if the notes give them, else "",
   "missing": names of the fields above the notes give no information for
 }} ] }}
 
-Rules:
-- "Elaborate" means fuller wording of the facts given (what, for whom, why, the
-  outcome if stated). Never add facts: no new tools, results, causes, numbers,
-  people or details that are not in the notes.
+{facts_rules}
 - If the notes do not state something, leave that field "" (or []) and list it in "missing".
 """
+
+# Shared by the log update, sync and refine prompts: what a draft may say
+FACTS_RULES = """Rules:
+- Use only facts in the source (the notes, the work log, or the given facts).
+  Rewording is allowed; new facts are not: no new tools, results, causes,
+  numbers, people, purposes or details.
+- Length follows the facts. One sentence per task; add a second sentence only
+  if it carries another fact from the source (for whom, which system, why).
+  Never add a sentence that only states a purpose, benefit or result.
+- Do not say that something was successful, verified, ensured, enabled,
+  improved or worked correctly unless the notes say so.
+- No first person: never "I", "me", "my", "we" or "our". Start each task with
+  a past-tense verb ("Implemented...", "Fixed...", "Continued...").
+
+Example. Notes: "fixing the OCR bug in system A"
+  Good: "Fixed the OCR bug in system A."
+  Bad:  "I successfully fixed the OCR bug in system A, ensuring accurate text
+         extraction." (first person, and "successfully" / "ensuring accurate
+         text extraction" are not in the notes)"""
 
 TIME_FIELDS = ["clock_in", "clock_out", "break_time"]
 
@@ -105,7 +121,8 @@ def resolve_date(text, today):
 def draft_log_update(notes, today, llm=None):
     """Draft one entry per date from rough notes. Returns a list of checked day drafts."""
     llm = llm or OpenAICompatLLM.from_config()
-    reply = llm.chat_json(LOG_UPDATE_PROMPT.format(today=f"{today:%A %d/%m/%Y}"), notes)
+    prompt = LOG_UPDATE_PROMPT.format(today=f"{today:%A %d/%m/%Y}", facts_rules=FACTS_RULES)
+    reply = llm.chat_json(prompt, notes)
     days = reply.get("days")
     if not isinstance(days, list) or not days:
         raise ValueError("The draft has no days in it")
@@ -127,12 +144,10 @@ SYNC_PROMPT = """You rewrite company work-log entries for a university logbook.
 
 You get JSON {"days": [{"date": "dd/mm/yyyy", "tasks": "..."}]}. For each day, rewrite
 "tasks" in plain, direct logbook style: a list with one entry per task (each line of
-"tasks" is one task), 1-2 sentences each.
-
-Rules: keep exactly the same facts; never add tools, results, causes, numbers or
-details; never merge or drop tasks.
+"tasks" is one task). Keep exactly the same facts; never merge or drop tasks.
 
 Reply with JSON only: {"days": [{"date": "dd/mm/yyyy", "activities": ["...", "..."]}]}
+
 """
 
 
@@ -140,7 +155,7 @@ def draft_sync(days, llm=None):
     """Rewrite Sheet tasks in logbook style. days: [{"date", "tasks"}].
     Returns {date: [activities]} for the days the model answered correctly."""
     llm = llm or OpenAICompatLLM.from_config()
-    reply = llm.chat_json(SYNC_PROMPT, json.dumps({"days": days}, ensure_ascii=False))
+    reply = llm.chat_json(SYNC_PROMPT + FACTS_RULES, json.dumps({"days": days}, ensure_ascii=False))
     out = {}
     for day in reply.get("days", []):
         activities = day.get("activities") if isinstance(day, dict) else None
@@ -156,17 +171,18 @@ You get JSON {"fields": {...}, "facts": "...", "instruction": "..."}.
 work log). Rewrite only what the instruction asks; keep the same keys and types
 ("activities" stays a list with one entry per task).
 
-Rules: use only facts from "facts" or stated in the instruction itself; never add
-tools, results, causes, numbers or details; never drop tasks unless told to.
+Facts may also come from the instruction itself (e.g. "add that I was unfamiliar
+with the format"). Never drop tasks unless told to.
 
 Reply with JSON only: {"fields": {...same keys...}, "changes": "one or two sentences: what you changed and why"}
+
 """
 
 
 def refine_text(fields, facts, instruction, llm=None):
     """Rewrite some fields following an instruction. Returns (new fields, changes)."""
     llm = llm or OpenAICompatLLM.from_config()
-    reply = llm.chat_json(REFINE_PROMPT, json.dumps(
+    reply = llm.chat_json(REFINE_PROMPT + FACTS_RULES, json.dumps(
         {"fields": fields, "facts": facts, "instruction": instruction}, ensure_ascii=False))
     new = reply.get("fields")
     if not isinstance(new, dict) or set(new) != set(fields):

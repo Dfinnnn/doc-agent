@@ -240,6 +240,35 @@ def test_dropped_task_is_flagged():
         check_draft_against_notes(notes, draft))
 
 
+def test_added_outcome_words_are_flagged():
+    # Real drafts said "ensure proper operation" and "to verify proper functionality"
+    notes = "- tested the preview cards in the web page"
+    draft = make_draft("Tested the preview cards to ensure they work properly.",
+                       ["Tested the preview cards to verify they work."])
+    what = whats(check_draft_against_notes(notes, draft))
+    assert "Possible added outcome: ensure, properly not in the notes" in what
+    assert "Possible added outcome: verify not in the notes" in what
+
+
+def test_outcome_word_in_the_notes_is_fine_even_misspelt():
+    notes = "- implementing the github deploy action into UAT and succeful"
+    draft = make_draft("Implemented the GitHub deploy action into UAT successfully.",
+                       ["Implemented the GitHub deploy action into UAT successfully."])
+    assert not any("outcome" in w for w in whats(check_draft_against_notes(notes, draft)))
+
+
+def test_first_person_is_flagged():
+    notes = "- worked on the slides"
+    draft = make_draft("Worked on the slides.", ["I worked on the slides with my team."])
+    assert "First person in the draft: I, my" in whats(check_draft_against_notes(notes, draft))
+
+
+def test_words_that_only_contain_i_or_we_are_not_first_person():
+    notes = "- reviewed the UI and the web API"
+    draft = make_draft("Reviewed the UI and the web API.", ["Reviewed the UI and the web API."])
+    assert check_draft_against_notes(notes, draft) == []
+
+
 # ---- Log update dates (code decides the year) ----
 
 
