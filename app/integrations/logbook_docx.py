@@ -110,6 +110,13 @@ def open_logbook():
     return Document(config.LOGBOOK_PATH)
 
 
+def check_writable():
+    """Raise PermissionError if the logbook can't be saved (e.g. it is open in Word).
+    Opens the file for writing and closes it at once; nothing in it changes."""
+    with open(config.LOGBOOK_PATH, "r+b"):
+        pass
+
+
 def find_week_tables(doc):
     """Return the week tables in document order: the 1st is Week 1, the 2nd Week 2..."""
     return [t for t in doc.tables if t.cell(0, 0).text.strip().startswith(WEEK_LABEL)]

@@ -5,7 +5,14 @@ Uses a fake store with no real documents, so nothing here reaches the Sheet or t
 
 import pytest
 
+from app.agent import approval
 from app.agent.approval import decide, needs_choice
+
+
+@pytest.fixture(autouse=True)
+def logbook_not_locked(monkeypatch):
+    """The lock check opens the real logbook file; tests pretend it is free."""
+    monkeypatch.setattr(approval.logbook_docx, "check_writable", lambda: None)
 
 
 class FakeStore:
@@ -60,6 +67,27 @@ def test_reject_all():
     store = FakeStore(make_ops())
     results = decide(store, 1, [], {}, no_record)
     assert results == ["#1 rejected, not written", "#2 rejected, not written"]
+
+
+def test_locked_logbook_stops_before_anything_is_written(monkeypatch):
+    def locked():
+        raise PermissionError(13, "Permission denied", "log (Testing).docx")
+    monkeypatch.setattr(approval.logbook_docx, "check_writable", locked)
+    ops = make_ops()
+    ops[1]["issues"] = []  # a normal logbook entry this time
+    store, events = FakeStore(ops), []
+    with pytest.raises(ValueError, match="Nothing was written. log \\(Testing\\).docx is open"):
+        decide(store, 1, [1, 2], {"1": "overwrite"}, lambda kind, data: events.append(kind))
+    assert store.updates == [] and events == []  # not even the Sheet row, no decision logged
+
+
+def test_sheet_only_decision_does_not_need_the_logbook(monkeypatch):
+    def locked():
+        raise PermissionError(13, "Permission denied", "log.docx")
+    monkeypatch.setattr(approval.logbook_docx, "check_writable", locked)
+    store = FakeStore(make_ops())
+    assert decide(store, 1, [1], {"1": "skip"}, no_record) == [
+        "#1 skipped by you, not written", "#2 rejected, not written"]
 
 
 def test_needs_choice():

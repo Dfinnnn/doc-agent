@@ -11,10 +11,16 @@ from app import config
 from app.llm.base import LLM
 
 
+TIMEOUT_SECONDS = 120  # per try; a sync batch or summary can take a while
+MAX_RETRIES = 2        # the library retries connection errors and busy servers
+
+
 class OpenAICompatLLM(LLM):
     def __init__(self, model, api_key, base_url):
         self.model = model
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        # Without a timeout the library waits up to 10 minutes per try
+        self.client = OpenAI(api_key=api_key, base_url=base_url,
+                             timeout=TIMEOUT_SECONDS, max_retries=MAX_RETRIES)
 
     @classmethod
     def from_config(cls):

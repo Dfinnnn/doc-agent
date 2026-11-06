@@ -7,6 +7,7 @@ Read tools run directly. Write tools only propose a change (added in the next st
 import json
 from datetime import date, datetime, timedelta
 
+from app.errors import explain
 from app.integrations import logbook_docx, sheets
 from app.llm.draft import draft_log_update, draft_sync, refine_text, summarize_days
 from app.validation import audit as audit_module
@@ -56,7 +57,7 @@ def read_sheet(date_from, date_to=None):
         try:
             records = sheets.read_month(year, month)
         except Exception as error:  # missing tab, broken headers...
-            problems.append(f"{sheets.tab_name(year, month)}: {error}")
+            problems.append(f"{sheets.tab_name(year, month)}: {explain(error)}")
             continue
         days += [compact(r) for r in records if start <= r["date"] <= end]
     return {"days": days, "problems": problems}
@@ -280,7 +281,8 @@ def log_update(notes):
             if draft[field]:
                 row[field] = draft[field]
         if isinstance(months[key], Exception):
-            sheet_issues.append(issue(f"{sheets.tab_name(*key)} cannot be read: {months[key]}", BLOCK))
+            sheet_issues.append(issue(f"{sheets.tab_name(*key)} cannot be read: "
+                                      f"{explain(months[key])}", BLOCK))
             existing = {}
         else:
             existing = months[key].get(day, {})
@@ -342,7 +344,7 @@ def sync(date_from=None, date_to=None):
         try:
             records = sheets.read_month(year, month)
         except Exception as error:
-            skipped.append(f"{sheets.tab_name(year, month)}: {error}")
+            skipped.append(f"{sheets.tab_name(year, month)}: {explain(error)}")
             continue
         for r in records:
             day = r["date"]
@@ -663,5 +665,5 @@ def run_tool(name, arguments):
     try:
         result = TOOLS[name]["function"](**arguments)
     except Exception as error:
-        result = {"error": f"{type(error).__name__}: {error}"}
+        result = {"error": explain(error)}
     return json.dumps(result, ensure_ascii=False)

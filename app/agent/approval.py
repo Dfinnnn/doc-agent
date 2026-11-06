@@ -5,6 +5,7 @@ then the code writes them and saves before/after values.
 import re
 from datetime import datetime
 
+from app.errors import explain, raw
 from app.integrations import logbook_docx, sheets
 from app.llm.draft import refine_text
 from app.store.db import APPROVED, FAILED, PROPOSED, REJECTED, UNDONE, WRITTEN
@@ -58,7 +59,7 @@ def preview_data(op):
         try:
             before = current_value(op)
         except Exception as error:  # e.g. the tab does not exist yet
-            before, data["note"] = {}, f"cannot read the current row: {error}"
+            before, data["note"] = {}, f"cannot read the current row: {explain(error)}"
         for field in SHEET_FIELDS:
             if field not in proposal or before.get(field, "") == proposal[field]:
                 data["kept"].append(field)  # not changed by this operation
@@ -292,6 +293,8 @@ def needs_choice(op):
 
 
 CHOICES = {"scope": ("future", "all"), "conflict": ("overwrite", "append", "skip")}
+# Changes that save the .docx (a setting may reformat existing entries)
+LOGBOOK_KINDS = ("logbook_entry", "week_table", "setting")
 
 
 def decide(store, run_id, chosen, choices, record, answer=None):
@@ -319,6 +322,13 @@ def decide(store, run_id, chosen, choices, record, answer=None):
             raise ValueError(f"#{op['id']} already has content: choose overwrite, append or skip")
         if question and given is not None and given not in CHOICES[question]:
             raise ValueError(f"#{op['id']}: '{given}' is not one of {', '.join(CHOICES[question])}")
+    # The logbook open in Word would fail halfway (Sheet rows written, logbook not):
+    # check before the first write, so a locked file means nothing is written at all
+    if any(op["id"] in chosen and op["kind"] in LOGBOOK_KINDS for op in ops):
+        try:
+            logbook_docx.check_writable()
+        except OSError as error:
+            raise ValueError(f"Nothing was written. {explain(error)}") from error
     record("decision", {"answer": answer, "approved": sorted(chosen), "choices": choices})
 
     results = []
@@ -345,10 +355,9 @@ def decide(store, run_id, chosen, choices, record, answer=None):
         try:
             before, after = execute(op, choice)
         except Exception as error:
-            message = f"{type(error).__name__}: {error}"
-            store.update_operation(op["id"], FAILED, error=message)
-            record("write_failed", {"operation": op["id"], "error": message})
-            results.append(f"#{op['id']} FAILED, nothing confirmed: {message}")
+            store.update_operation(op["id"], FAILED, error=raw(error))
+            record("write_failed", {"operation": op["id"], "error": raw(error)})
+            results.append(f"#{op['id']} FAILED, nothing confirmed: {explain(error)}")
             continue
         store.update_operation(op["id"], WRITTEN, before=before, after=after)
         record("write", {"operation": op["id"], "choice": choice, "before": before, "after": after})
@@ -374,7 +383,8 @@ def refine_ops(store, run_id, ids, instruction, record, show=None):
         try:
             message = refine_op(store, op, instruction)
         except Exception as error:
-            message = f"#{op_id} could not be refined: {type(error).__name__}: {error}"
+            message = f"#{op_id} could not be refined: {explain(error)}"
+            record("error", {"operation": op_id, "error": raw(error)})
         record("refine", {"operation": op_id, "instruction": instruction, "result": message})
         new_op = store.operation(op_id)
         item = {"id": op_id, "message": message, "before": draft_text(op),
@@ -445,9 +455,8 @@ def undo(store, op_id, record):
         try:
             apply_setting(p["setting"], p["new"], p["old"], p["apply_to"])
         except Exception as error:
-            message = f"{type(error).__name__}: {error}"
-            record("undo_failed", {"operation": op_id, "error": message})
-            return f"Undo of #{op_id} FAILED, nothing confirmed: {message}"
+            record("undo_failed", {"operation": op_id, "error": raw(error)})
+            return f"Undo of #{op_id} FAILED, nothing confirmed: {explain(error)}"
         store.update_operation(op_id, UNDONE)
         record("undo", {"operation": op_id, "restored": p["old"]})
         return f"#{op_id} undone: {p['setting']} is back to {p['old']}."
@@ -466,9 +475,8 @@ def undo(store, op_id, record):
             logbook_docx.restore_entry(day, before["date_text"], before["activities"])
         restored = current_value(op)
     except Exception as error:
-        message = f"{type(error).__name__}: {error}"
-        record("undo_failed", {"operation": op_id, "error": message})
-        return f"Undo of #{op_id} FAILED, nothing confirmed: {message}"
+        record("undo_failed", {"operation": op_id, "error": raw(error)})
+        return f"Undo of #{op_id} FAILED, nothing confirmed: {explain(error)}"
     if restored != before:
         record("undo_failed", {"operation": op_id, "now": restored, "expected": before})
         return f"Undo of #{op_id} ran, but the result does not match the old value. Please check it."

@@ -10,6 +10,7 @@ from datetime import date
 
 from app import config
 from app.agent.approval import format_events, review, undo
+from app.errors import explain, raw
 from app.llm.openai_compat import OpenAICompatLLM
 from app.store.db import WRITTEN, Store
 from app.tools.registry import run_tool, set_context, tool_schemas
@@ -177,9 +178,8 @@ def handle_message(session, text):
     try:
         answer = ask(session.llm, session.messages, session.tools, record)
     except Exception as error:  # report plainly, keep the chat going
-        message = f"{type(error).__name__}: {error}"
-        record("error", {"error": message})
-        return {"run_id": run_id, "kind": "error", "text": f"Error: {message}"}
+        record("error", {"error": raw(error)})
+        return {"run_id": run_id, "kind": "error", "text": explain(error)}
     record("answer", {"text": answer})
     return {"run_id": run_id, "kind": "answer", "text": answer}
 
@@ -204,8 +204,8 @@ def main():
         try:  # the user approves; the code writes
             tell_agent(session.messages, review(session.store, reply["run_id"], record))
         except Exception as error:  # report plainly, keep the chat going
-            record("error", {"error": f"{type(error).__name__}: {error}"})
-            print(f"\nagent> Error: {type(error).__name__}: {error}")
+            record("error", {"error": raw(error)})
+            print(f"\nagent> {explain(error)}")
 
 
 if __name__ == "__main__":

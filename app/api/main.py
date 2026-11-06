@@ -10,12 +10,14 @@ import logging
 import threading
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import config
 from app.agent.approval import decide, needs_choice, pending_ops, preview_data, refine_ops
 from app.agent.loop import Session, handle_message, tell_agent, undo_targets
+from app.errors import explain
 from app.store.db import Store
 
 app = FastAPI(title="Document Assistant Agent")
@@ -24,6 +26,15 @@ app = FastAPI(title="Document Assistant Agent")
 # requests out of the server's terminal log so the real ones stay readable.
 logging.getLogger("uvicorn.access").addFilter(
     lambda record: "/api/progress" not in record.getMessage())
+
+
+@app.exception_handler(Exception)
+def unexpected_error(request, error):
+    """Any error no endpoint caught: send the plain reason as JSON (the page shows
+    it) instead of a bare "500 Internal Server Error". The full error stays in the
+    server's terminal."""
+    logging.getLogger("uvicorn.error").exception("Unexpected error on %s", request.url.path)
+    return JSONResponse(status_code=500, content={"detail": explain(error)})
 
 # One chat for the one local user, made on the first message (like the terminal's).
 state = {"session": None}

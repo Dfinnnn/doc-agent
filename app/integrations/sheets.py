@@ -4,7 +4,9 @@ import calendar
 import sys
 from datetime import date, datetime
 
+import httplib2
 from google.oauth2 import service_account
+from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient.discovery import build
 
 from app import config
@@ -24,12 +26,17 @@ TOTAL_FORMULA = PROFILE["total_formula"]
 WEEKEND_MODE = PROFILE["weekend_mode"]
 
 
+TIMEOUT_SECONDS = 60  # without one, a stuck connection waits forever
+
+
 def get_service():
     """Sign in with the service-account key and return a Sheets API client."""
     creds = service_account.Credentials.from_service_account_file(
         config.SERVICE_ACCOUNT_FILE, scopes=SCOPES
     )
-    return build("sheets", "v4", credentials=creds)
+    # httplib2 and google-auth-httplib2 come with google-api-python-client
+    http = AuthorizedHttp(creds, http=httplib2.Http(timeout=TIMEOUT_SECONDS))
+    return build("sheets", "v4", http=http)
 
 
 def read_range(tab, cells, render="FORMATTED_VALUE"):
