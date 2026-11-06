@@ -789,6 +789,12 @@ async function start() {
     const health = await api("/api/health");
     $("model").textContent = health.model;
     $("logbook-file").textContent = health.logbook_file;
+    // Which documents writes go to; real mode is marked so it can't be missed
+    const real = health.files_mode === "real";
+    $("files-mode").textContent = real ? "REAL files" : "Testing copies";
+    $("files-mode").classList.toggle("real", real);
+    document.body.classList.toggle("real-files", real);
+    document.title = real ? "Work journal · REAL files" : "Work journal";
     renderPreview();
     const runs = await api("/api/runs?limit=1");
     if (runs.waiting_run !== null) await showWaiting(runs.waiting_run);

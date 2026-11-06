@@ -186,7 +186,9 @@ def handle_message(session, text):
 
 def main():
     session = Session()
-    print(f"Agent ready ({config.LLM_PROVIDER} / {config.LLM_MODEL}).")
+    files = ("REAL FILES: writes change your real Sheet and logbook"
+             if config.FILES_MODE == "real" else "TESTING copies")
+    print(f"Agent ready ({config.LLM_PROVIDER} / {config.LLM_MODEL}) · {files}")
     print("Commands: 'log' (last run's activity), 'log 5', 'undo' (last approved changes), "
           "'undo 3' or 'undo 3,5', 'exit'.")
     while True:

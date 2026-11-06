@@ -30,6 +30,7 @@ def sheet_error(status):
     (sheet_error(404), "Check SHEET_ID"),
     (sheet_error(403), "Share it with the service account"),
     (sheet_error(503), "busy"),
+    (sheet_error(400), "Save as Google Sheets"),
     (PermissionError(13, "Permission denied", r"C:\Users\someone\Logs\log (Testing).docx"),
      "log (Testing).docx is open in another program (Word?)"),
     (ValueError("2026-10-05 already has entries; not overwriting them"),

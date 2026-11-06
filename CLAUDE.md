@@ -16,7 +16,7 @@ Read before working: `docs/idea.md` (purpose), `docs/scope-v1.md` (what V1 does 
 
 ## Hard rules
 - **Never commit secrets or data:** no `.env`, service-account JSON, API keys, or the real or testing log files. Real data lives outside this repo in `../Automation Daily Log/`. Check `git status` before every commit.
-- **During development, use only the testing copies** (the Sheet copy, and the `（Testing）.docx`). Their IDs and paths come from `.env`.
+- **Testing copies by default** (`TEST_SHEET_ID`, `TEST_LOGBOOK_PATH` in `.env`). The real files are used only when the user sets `USE_REAL_FILES=yes` themselves. Never switch that setting or the `REAL_*` values for them, and never test or debug against the real files.
 - **Agent design rules (from scope):**
   - No write without preview + approval.
   - The LLM decides intent and fields; code decides format.

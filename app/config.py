@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -20,17 +21,63 @@ def _required(name):
     return value
 
 
-# Google Sheets
-SHEET_ID = _required("SHEET_ID")
-# Relative paths in .env are taken from the project folder, so scripts work from any folder
-SERVICE_ACCOUNT_FILE = PROJECT_ROOT / _required("GOOGLE_SERVICE_ACCOUNT_FILE")
+def sheet_id(value):
+    """A Sheet ID, or the ID taken from a full Sheet link (.../spreadsheets/d/<ID>/edit)."""
+    match = re.search(r"/spreadsheets/d/([A-Za-z0-9_-]+)", value)
+    return match.group(1) if match else value
 
-# University Logbook
-LOGBOOK_PATH = Path(_required("LOGBOOK_PATH"))
-# Development guard: only the testing copy may be used until Part 9 passes.
-# Remove this on purpose when switching to the real logbook.
-if "Testing" not in LOGBOOK_PATH.name:
-    raise RuntimeError(f"LOGBOOK_PATH is not the testing copy: {LOGBOOK_PATH.name}")
+
+def files_for(env):
+    """Which Sheet, logbook and Google key to use, from the .env settings in `env` (a dict).
+
+    Testing copies by default. The real files only with USE_REAL_FILES=yes, and
+    only if they really differ from the testing ones. Returns (mode, sheet_id,
+    logbook_path, key_file); raises with a plain reason if the settings are mixed up.
+    Each mode may have its own service-account key (TEST_/REAL_GOOGLE_SERVICE_ACCOUNT_FILE),
+    e.g. when the real Sheet belongs to another Google account; otherwise both
+    use GOOGLE_SERVICE_ACCOUNT_FILE.
+    """
+    def get(*names):  # the first of these names that is set (old names still work)
+        return next((env[n].strip() for n in names if (env.get(n) or "").strip()), "")
+
+    def key(mode):  # this mode's service-account key, else the shared one
+        found = get(f"{mode}_GOOGLE_SERVICE_ACCOUNT_FILE", "GOOGLE_SERVICE_ACCOUNT_FILE")
+        if not found:
+            raise RuntimeError(f"{mode}_GOOGLE_SERVICE_ACCOUNT_FILE (or GOOGLE_SERVICE_ACCOUNT_FILE) "
+                               "must be set in .env")
+        return found
+
+    switch = (env.get("USE_REAL_FILES") or "no").strip().lower()
+    if switch not in ("yes", "no"):
+        raise RuntimeError(f"USE_REAL_FILES must be yes or no, not '{switch}'")
+    test_sheet = sheet_id(get("TEST_SHEET_ID", "SHEET_ID"))
+    test_logbook = get("TEST_LOGBOOK_PATH", "LOGBOOK_PATH")
+
+    if switch == "no":
+        if not test_sheet or not test_logbook:
+            raise RuntimeError("TEST_SHEET_ID and TEST_LOGBOOK_PATH must be set in .env "
+                               "(see .env.example)")
+        if "Testing" not in Path(test_logbook).name:
+            raise RuntimeError(f"TEST_LOGBOOK_PATH is not a testing copy: {Path(test_logbook).name}")
+        return "testing", test_sheet, Path(test_logbook), key("TEST")
+
+    real_sheet = sheet_id(get("REAL_SHEET_ID"))
+    real_logbook = get("REAL_LOGBOOK_PATH")
+    if not real_sheet or not real_logbook:
+        raise RuntimeError("USE_REAL_FILES=yes needs REAL_SHEET_ID and REAL_LOGBOOK_PATH in .env")
+    if real_sheet == test_sheet:
+        raise RuntimeError("REAL_SHEET_ID is the same Sheet as the testing one")
+    if "Testing" in Path(real_logbook).name or Path(real_logbook) == Path(test_logbook or "."):
+        raise RuntimeError("REAL_LOGBOOK_PATH points to the testing copy")
+    return "real", real_sheet, Path(real_logbook), key("REAL")
+
+
+# Which documents: "testing" (default) or "real" (only with USE_REAL_FILES=yes)
+FILES_MODE, SHEET_ID, LOGBOOK_PATH, _KEY_FILE = files_for(os.environ)
+# Each mode keeps its own history, so undo never puts a testing value into a real file
+DB_FILE = PROJECT_ROOT / "data" / ("agent-real.db" if FILES_MODE == "real" else "agent.db")
+# Relative paths in .env are taken from the project folder, so scripts work from any folder
+SERVICE_ACCOUNT_FILE = PROJECT_ROOT / _KEY_FILE
 
 
 # LLM: any OpenAI-compatible provider (Gemini, OpenAI, DeepSeek, Groq...)

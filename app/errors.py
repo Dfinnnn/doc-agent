@@ -41,6 +41,9 @@ def explain(error):
         if status == 403:
             return ("Google refused access to the Sheet. Share it with the service account "
                     "email as Editor.")
+        if status == 400:
+            return ("Google Sheets refused the request. If the file is an .xlsx, open it in "
+                    "Google Sheets, use File > Save as Google Sheets, and use the new link.")
         if status == 429 or status >= 500:
             return "Google Sheets is busy. Wait a little, then try again."
         return f"Google Sheets refused the request (HTTP {status})."

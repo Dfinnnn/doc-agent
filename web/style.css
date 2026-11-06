@@ -70,6 +70,14 @@ textarea, input[type="text"], .refine-box input {
 }
 #status.busy { color: var(--accent); }
 
+/* Which documents writes go to: grey for testing, coral for the real files */
+.mode {
+  font-size: 12px; padding: 2px 9px; border-radius: var(--radius);
+  background: var(--soft); color: var(--muted); border: 1px solid var(--rule);
+}
+.mode.real { background: #faece7; color: #712b13; border-color: #d85a30; font-weight: 600; }
+body.real-files { border-top: 3px solid #d85a30; }
+
 /* ---- Layout: chat (5) and the side panel (6) ---- */
 .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); }
 .chat, .side { display: flex; flex-direction: column; min-height: 0; }

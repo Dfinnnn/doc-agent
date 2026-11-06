@@ -1,6 +1,7 @@
 """SQLite store: runs, their event timeline, and the operations (proposed changes).
 
-One file, data/agent.db (ignored by git: it holds before/after values from the records).
+One file per mode: data/agent.db for the testing copies, data/agent-real.db for the
+real files (ignored by git: they hold before/after values from the records).
 """
 
 import json
@@ -9,7 +10,7 @@ from datetime import datetime
 
 from app import config
 
-DB_PATH = config.PROJECT_ROOT / "data" / "agent.db"
+DB_PATH = config.DB_FILE  # chosen by the files mode in config.py
 
 # Operation statuses, in the order an operation moves through them
 PROPOSED, APPROVED, REJECTED, WRITTEN, FAILED, UNDONE = (

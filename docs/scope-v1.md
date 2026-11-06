@@ -104,7 +104,7 @@ A service account is created in a Google Cloud project under the personal accoun
 ## 10a. Repo
 - Code lives in a new folder inside `Assistance Agent/` (`doc-agent/`). Data files stay outside it, in `Automation Daily Log/`.
 - GitHub: private first, public later. No keys, `.env`, service-account JSON or company data are ever committed, because history stays visible once the repo is public. Tests and the showcase use made-up demo data.
-- Development uses only the testing copies (Sheet copy, `（Testing）.docx`).
+- Testing copies (Sheet copy, `（Testing）.docx`) are the default. The real files are used only when `.env` says `USE_REAL_FILES=yes`, set by the user. Each mode has its own settings (`TEST_*` / `REAL_*`) and its own history database, so undo never crosses between them. The app refuses to start if the two are mixed up, and shows which mode it is in. A read-only preflight check runs before the first real write.
 
 ## 11. Out of scope for V1
 Multi-user, LangGraph, MCP, vector DB, screenshots in the logbook, stored project registry, learning path, Google Docs output, and drafting new documents from records (V2 candidate).
